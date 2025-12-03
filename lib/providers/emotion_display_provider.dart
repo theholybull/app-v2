@@ -1,549 +1,658 @@
+import 'package:flutter/foundation.dart';
+import 'package:logger/logger.dart';
 import 'dart:async';
+import 'dart:math';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
-
-/// Represents the different emotional states the eyes can display.
 enum Emotion {
-  neutral,
   happy,
   sad,
   angry,
   surprised,
-  listening,
-  speaking,
-  idle,
+  neutral,
+  curious,
+  focused,
+  sleepy,
+  excited,
+  confused,
 }
 
-/// Represents which eye is being animated or updated.
-enum EyeSide {
-  left,
-  right,
+enum EyeState {
+  open,
+  halfOpen,
+  closed,
+  blinking,
+  looking,
+  tracking,
 }
 
-/// Represents the current state/properties of an eye (position, scale, etc.).
-class EyeState {
-  EyeState({
-    required this.offset,
-    required this.scale,
-    required this.opacity,
-    required this.rotation,
-  });
-
-  final Offset offset;
-  final double scale;
-  final double opacity;
-  final double rotation;
-
-  EyeState copyWith({
-    Offset? offset,
-    double? scale,
-    double? opacity,
-    double? rotation,
-  }) {
-    return EyeState(
-      offset: offset ?? this.offset,
-      scale: scale ?? this.scale,
-      opacity: opacity ?? this.opacity,
-      rotation: rotation ?? this.rotation,
-    );
-  }
-}
-
-/// Provider that manages the animation and emotional state of the eyes.
-///
-/// This is where we blend:
-///  - local random/idling eye motion,
-///  - blinking,
-///  - and (optionally) remote head-state from the Pi head backend.
 class EmotionDisplayProvider extends ChangeNotifier {
-  EmotionDisplayProvider({
-    required TickerProvider vsync,
-  }) : _vsync = vsync {
-    _initAnimations();
-    _startBlinking();
-    _startRandomEyeMovements();
-  }
+  final Logger _logger = Logger();
 
-  final TickerProvider _vsync;
-
-  /// Animation controllers for various aspects of the eyes.
-  late final AnimationController _blinkController;
-  late final AnimationController _randomMovementController;
-
-  /// Tracks left/right eye states.
-  EyeState _leftEyeState = EyeState(
-    offset: Offset.zero,
-    scale: 1.0,
-    opacity: 1.0,
-    rotation: 0.0,
-  );
-
-  EyeState _rightEyeState = EyeState(
-    offset: Offset.zero,
-    scale: 1.0,
-    opacity: 1.0,
-    rotation: 0.0,
-  );
-
-  EyeState get leftEyeState => _leftEyeState;
-  EyeState get rightEyeState => _rightEyeState;
-
-  /// Current emotion being displayed.
   Emotion _currentEmotion = Emotion.neutral;
-  Emotion get currentEmotion => _currentEmotion;
+  EyeState _eyeState = EyeState.open;
+  double _eyeX = 0.0; // -1 to 1 (left to right)
+  double _eyeY = 0.0; // -1 to 1 (up to down)
+  double _steeringAngle = 0.0; // -45 to 45 degrees
+  bool _isTracking = false;
+  String? _trackedPersonId;
+  Timer? _blinkTimer;
+  Timer? _emotionTimer;
+  Timer? _trackingTimer;
 
-  /// Optional: callback to log or otherwise observe state changes.
-  void Function(String message)? logger;
+  // Eye animation parameters
+  double _blinkProgress = 0.0;
+  bool _isBlinking = false;
+  double _pupilSize = 0.3;
+  double _eyeOpenness = 1.0;
 
-  /// HTTP/polling bits for talking to the Pi head backend.
-  Timer? _headPollTimer;
+  // Emotion transition parameters
+  double _emotionIntensity = 0.0;
+  Emotion? _targetEmotion;
+
+  // Head backend integration
   String? _headBaseUrl;
+  Timer? _headPollTimer;
 
-  /// Exposed for wiring up from the app:
-  /// Set the base URL of the head backend, e.g. "http://kilo.local:8090".
-  void setHeadBaseUrl(String? url) {
-    _headBaseUrl = url?.trim().isEmpty ?? true ? null : url!.trim();
-    _restartHeadBackendSync();
+  // Getters
+  Emotion get currentEmotion => _currentEmotion;
+  EyeState get eyeState => _eyeState;
+  double get eyeX => _eyeX;
+  double get eyeY => _eyeY;
+  double get steeringAngle => _steeringAngle;
+  bool get isTracking => _isTracking;
+  String? get trackedPersonId => _trackedPersonId;
+  double get blinkProgress => _blinkProgress;
+  bool get isBlinking => _isBlinking;
+  double get pupilSize => _pupilSize;
+  double get eyeOpenness => _eyeOpenness;
+  double get emotionIntensity => _emotionIntensity;
+
+  Future<void> initialize() async {
+    _logger.i('Initializing emotion display provider...');
+
+    // Start automatic blinking
+    _startBlinking();
+
+    // Start random eye movements
+    _startRandomEyeMovements();
+
+    // Set initial neutral emotion
+    setEmotion(Emotion.neutral);
   }
 
-  // ---- Initialization & Animation Setup ----
+  // ========= HEAD BACKEND SYNC =========
 
-  void _initAnimations() {
-    _blinkController = AnimationController(
-      vsync: _vsync,
-      duration: const Duration(milliseconds: 120),
-    )..addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _blinkController.reverse();
-      }
-    });
-
-    _randomMovementController = AnimationController(
-      vsync: _vsync,
-      duration: const Duration(seconds: 3),
-    )..addStatusListener((status) {
-      if (status == AnimationStatus.completed ||
-          status == AnimationStatus.dismissed) {
-        _randomMovementController.forward(from: 0.0);
-      }
-    });
-  }
-
-  // ---- Public Emotion / Mode API ----
-
-  void setEmotion(Emotion emotion) {
-    if (_currentEmotion == emotion) {
-      return;
-    }
-    _currentEmotion = emotion;
-    _applyEmotionToEyes(emotion);
-    _log('Emotion changed -> $emotion');
-    notifyListeners();
-  }
-
-  void showNeutral() => setEmotion(Emotion.neutral);
-  void showHappy() => setEmotion(Emotion.happy);
-  void showSad() => setEmotion(Emotion.sad);
-  void showAngry() => setEmotion(Emotion.angry);
-  void showSurprised() => setEmotion(Emotion.surprised);
-  void showListening() => setEmotion(Emotion.listening);
-  void showSpeaking() => setEmotion(Emotion.speaking);
-  void showIdle() => setEmotion(Emotion.idle);
-
-  // ---- Internal emotion → eye layout logic ----
-
-  void _applyEmotionToEyes(Emotion emotion) {
-    switch (emotion) {
-      case Emotion.neutral:
-        _setEyeStateBoth(
-          offset: Offset.zero,
-          scale: 1.0,
-          opacity: 1.0,
-          rotation: 0.0,
-        );
-        break;
-
-      case Emotion.happy:
-        _setEyeStateBoth(
-          offset: const Offset(0, -2),
-          scale: 1.05,
-          opacity: 1.0,
-          rotation: 0.0,
-        );
-        break;
-
-      case Emotion.sad:
-        _setEyeStateBoth(
-          offset: const Offset(0, 2),
-          scale: 0.95,
-          opacity: 0.95,
-          rotation: 0.1,
-        );
-        break;
-
-      case Emotion.angry:
-        _setEyeState(
-          EyeSide.left,
-          offset: const Offset(-1, -1),
-          scale: 1.0,
-          opacity: 1.0,
-          rotation: -0.1,
-        );
-        _setEyeState(
-          EyeSide.right,
-          offset: const Offset(1, -1),
-          scale: 1.0,
-          opacity: 1.0,
-          rotation: 0.1,
-        );
-        break;
-
-      case Emotion.surprised:
-        _setEyeStateBoth(
-          offset: Offset.zero,
-          scale: 1.1,
-          opacity: 1.0,
-          rotation: 0.0,
-        );
-        break;
-
-      case Emotion.listening:
-        _setEyeStateBoth(
-          offset: const Offset(-1, 0),
-          scale: 1.0,
-          opacity: 1.0,
-          rotation: -0.05,
-        );
-        break;
-
-      case Emotion.speaking:
-        _setEyeStateBoth(
-          offset: const Offset(1, 0),
-          scale: 1.0,
-          opacity: 1.0,
-          rotation: 0.05,
-        );
-        break;
-
-      case Emotion.idle:
-        _setEyeStateBoth(
-          offset: const Offset(0, 0),
-          scale: 1.0,
-          opacity: 0.9,
-          rotation: 0.0,
-        );
-        break;
-    }
-  }
-
-  void _setEyeStateBoth({
-    required Offset offset,
-    required double scale,
-    required double opacity,
-    required double rotation,
-  }) {
-    _leftEyeState = EyeState(
-      offset: offset,
-      scale: scale,
-      opacity: opacity,
-      rotation: rotation,
-    );
-    _rightEyeState = EyeState(
-      offset: offset,
-      scale: scale,
-      opacity: opacity,
-      rotation: rotation,
-    );
-    notifyListeners();
-  }
-
-  void _setEyeState(
-      EyeSide side, {
-        required Offset offset,
-        required double scale,
-        required double opacity,
-        required double rotation,
-      }) {
-    if (side == EyeSide.left) {
-      _leftEyeState = EyeState(
-        offset: offset,
-        scale: scale,
-        opacity: opacity,
-        rotation: rotation,
-      );
-    } else {
-      _rightEyeState = EyeState(
-        offset: offset,
-        scale: scale,
-        opacity: opacity,
-        rotation: rotation,
-      );
-    }
-    notifyListeners();
-  }
-
-  // ---- Blinking ----
-
-  void _startBlinking() {
-    Timer.periodic(const Duration(seconds: 4), (timer) {
-      _blink();
+  void startHeadBackendSync(String baseUrl) {
+    _logger.i('Starting head backend sync with base URL: $baseUrl');
+    _headBaseUrl = baseUrl;
+    _headPollTimer?.cancel();
+    _headPollTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      _pollHeadState();
     });
   }
 
-  void _blink() {
-    if (_blinkController.isAnimating) return;
-
-    _blinkController.forward(from: 0.0);
-  }
-
-  Animation<double> get blinkAnimation => Tween<double>(
-    begin: 1.0,
-    end: 0.0,
-  ).animate(_blinkController);
-
-  // ---- Random Eye Movements (idle wiggle) ----
-
-  void _startRandomEyeMovements() {
-    _randomMovementController.addListener(() {
-      final t = _randomMovementController.value;
-      final dx = math.sin(t * 2 * math.pi) * 1.5;
-      final dy = math.cos(t * 2 * math.pi) * 1.5;
-
-      _leftEyeState = _leftEyeState.copyWith(
-        offset: Offset(dx, dy),
-      );
-
-      _rightEyeState = _rightEyeState.copyWith(
-        offset: Offset(-dx, dy),
-      );
-
-      notifyListeners();
-    });
-
-    _randomMovementController.forward(from: 0.0);
-  }
-
-  // ---- Head Backend Sync (Pi head) ----
-
-  void startHeadBackendSync() {
-    if (kIsWeb) {
-      _log('Head backend sync disabled on web.');
-      return;
-    }
-
-    if (_headBaseUrl == null) {
-      _log('Head backend base URL not set, not starting sync.');
-      return;
-    }
-
-    _restartHeadBackendSync();
-  }
-
-  void _restartHeadBackendSync() {
+  void stopHeadBackendSync() {
+    _logger.i('Stopping head backend sync');
     _headPollTimer?.cancel();
     _headPollTimer = null;
-
-    if (kIsWeb) {
-      return;
-    }
-    if (_headBaseUrl == null) {
-      return;
-    }
-
-    _log('Starting head backend sync with base URL: $_headBaseUrl');
-
-    _headPollTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-          (_) => _pollHeadState(),
-    );
+    _headBaseUrl = null;
   }
 
   Future<void> _pollHeadState() async {
-    final baseUrl = _headBaseUrl;
-    if (baseUrl == null || baseUrl.isEmpty) {
-      return;
-    }
+    final base = _headBaseUrl;
+    if (base == null || base.isEmpty) return;
 
     try {
-      final uri = Uri.parse('$baseUrl/state');
+      final uri = Uri.parse('$base/state');
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 1);
 
-      final httpClient = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 2);
-
-      final request = await httpClient.getUrl(uri);
+      final request = await client.getUrl(uri);
       final response = await request.close();
 
-      if (response.statusCode != 200) {
-        _log('Head backend /state returned ${response.statusCode}');
-        httpClient.close();
-        return;
+      if (response.statusCode == 200) {
+        final body = await response.transform(const Utf8Decoder()).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        _applyHeadState(data);
       }
 
-      final responseBody = await response.transform(utf8.decoder).join();
-      httpClient.close();
-
-      if (responseBody.isEmpty) {
-        _log('Head backend /state response body is empty.');
-        return;
-      }
-
-      final decoded = json.decode(responseBody);
-      if (decoded is! Map<String, dynamic>) {
-        _log('Head backend /state response is not a JSON object.');
-        return;
-      }
-
-      _applyHeadState(decoded);
-    } catch (e, st) {
-      _log('Error polling head backend: $e\n$st');
+      client.close();
+    } catch (e) {
+      _logger.w('Error polling head backend: $e');
     }
   }
 
-  void _applyHeadState(Map<String, dynamic> state) {
-    // The backend returns:
-    // {
-    //   "ok": true,
-    //   "mode": "idle" | "listening" | "speaking" | ...,
-    //   "emotion": "happy" | "neutral" | ...,
-    //   "eyes_state": "idle" | "listening" | "speaking" | ...,
-    //   "last_update": "2025-12-03T12:34:56Z"
-    // }
+  void _applyHeadState(Map<String, dynamic> data) {
+    final emotionStr = (data['emotion'] ?? '').toString().toLowerCase().trim();
+    final eyesStr = (data['eyes_state'] ?? '').toString().toLowerCase().trim();
+    final modeStr = (data['mode'] ?? '').toString().toLowerCase().trim();
 
-    final ok = state['ok'] != false;
-    if (!ok) {
-      _log('Head backend state has ok=false, ignoring.');
-      return;
-    }
-
-    final modeStr = (state['mode'] ?? '').toString().toLowerCase();
-    final emotionStr = (state['emotion'] ?? '').toString().toLowerCase();
-
-    // If eyes_state is present, we treat it as an additional hint
-    // for emotion or simple "mode" mapping.
-    if (state.containsKey('eyes_state')) {
-      final eyes = state['eyes_state'];
-
-      if (eyes is String && eyes.isNotEmpty) {
-        _applyEyesStateString(eyes);
-      }
-    }
-
-    // Map mode/emotion to our local Emotion enum.
     if (emotionStr.isNotEmpty) {
       final mapped = _mapEmotionString(emotionStr, modeStr);
-      if (mapped != null && mapped != _currentEmotion) {
-        setEmotion(mapped);
-      }
-    } else if (modeStr.isNotEmpty) {
-      final mapped = _mapEmotionString('', modeStr);
+      // IMPORTANT: only change if different, so we don't
+      // restart the transition on every poll.
       if (mapped != null && mapped != _currentEmotion) {
         setEmotion(mapped);
       }
     }
-  }
 
-  void _applyEyesStateString(String eyesState) {
-    // Simple string-based eyes state mapping. This should match whatever
-    // the Pi personality backend writes into "eyes_state" in head_state.json
-    // or personality/state.json (e.g. "listening", "speaking", "idle").
-    switch (eyesState.toLowerCase()) {
-      case 'listening':
-        showListening();
-        break;
-      case 'speaking':
-        showSpeaking();
-        break;
-      case 'idle':
-        showIdle();
-        break;
-      case 'happy':
-        showHappy();
-        break;
-      case 'sad':
-        showSad();
-        break;
-      case 'angry':
-        showAngry();
-        break;
-      case 'surprised':
-        showSurprised();
-        break;
-      case 'neutral':
-      default:
-        showNeutral();
-        break;
+    if (eyesStr.isNotEmpty) {
+      _applyEyesStateString(eyesStr);
     }
   }
 
   Emotion? _mapEmotionString(String emotion, String mode) {
-    final e = emotion.toLowerCase();
-    final m = mode.toLowerCase();
-
-    // If the backend explicitly gave us an emotion string, trust that first.
-    switch (e) {
+    switch (emotion) {
       case 'happy':
+      case 'smile':
         return Emotion.happy;
       case 'sad':
         return Emotion.sad;
       case 'angry':
+      case 'mad':
         return Emotion.angry;
       case 'surprised':
+      case 'shock':
         return Emotion.surprised;
-      case 'listening':
-        return Emotion.listening;
-      case 'speaking':
-        return Emotion.speaking;
-      case 'idle':
-        return Emotion.idle;
-      case 'neutral':
+      case 'curious':
+        return Emotion.curious;
+      case 'focused':
+        return Emotion.focused;
+      case 'sleepy':
+      case 'tired':
+        return Emotion.sleepy;
+      case 'excited':
+        return Emotion.excited;
+      case 'confused':
+        return Emotion.confused;
+      default:
         return Emotion.neutral;
     }
-
-    // Otherwise infer from mode.
-    switch (m) {
-      case 'listening':
-        return Emotion.listening;
-      case 'speaking':
-        return Emotion.speaking;
-      case 'idle':
-        return Emotion.idle;
-      case 'happy':
-        return Emotion.happy;
-      case 'sad':
-        return Emotion.sad;
-      case 'angry':
-        return Emotion.angry;
-      case 'surprised':
-        return Emotion.surprised;
-      case 'neutral':
-        return Emotion.neutral;
-    }
-
-    return null;
   }
 
-  // ---- Logging helper ----
+  void _applyEyesStateString(String eyes) {
+    // While we're mid-blink, don't let remote state stomp the animation.
+    if (_isBlinking) {
+      return;
+    }
 
-  void _log(String message) {
-    if (logger != null) {
-      logger!(message);
+    EyeState newState;
+    switch (eyes) {
+      case 'listen':
+        newState = EyeState.looking;
+        break;
+      case 'speak':
+      // We *could* force blinking here, but that fights the local blink logic.
+      // Just treat "speak" as an attentive/open state visually.
+        newState = EyeState.open;
+        break;
+      case 'idle':
+      default:
+        newState = EyeState.open;
+        break;
+    }
+
+    if (newState != _eyeState) {
+      _eyeState = newState;
+      notifyListeners();
+    }
+  }
+
+  // ========= CORE EMOTION / EYES LOGIC =========
+
+  void setEmotion(Emotion emotion, {double intensity = 1.0}) {
+    _logger.i('Setting emotion to: $emotion with intensity: $intensity');
+
+    _targetEmotion = emotion;
+    _emotionIntensity = intensity;
+
+    _animateEmotionTransition();
+  }
+
+  void _animateEmotionTransition() {
+    if (_targetEmotion == null) return;
+
+    const transitionDuration = Duration(milliseconds: 500);
+    const steps = 20;
+    final stepDuration = transitionDuration.inMilliseconds ~/ steps;
+
+    _emotionTimer?.cancel();
+
+    int currentStep = 0;
+    final Emotion targetEmotion = _targetEmotion!;
+
+    _emotionTimer = Timer.periodic(
+      Duration(milliseconds: stepDuration),
+          (timer) {
+        currentStep++;
+
+        final t = currentStep / steps;
+
+        // Pupil/eye openness based on target emotion
+        switch (targetEmotion) {
+          case Emotion.happy:
+          case Emotion.excited:
+            _pupilSize = 0.4 + (0.2 * _emotionIntensity);
+            _eyeOpenness = 1.0;
+            break;
+          case Emotion.sad:
+          case Emotion.sleepy:
+            _pupilSize = 0.3;
+            _eyeOpenness = 0.7;
+            break;
+          case Emotion.angry:
+            _pupilSize = 0.2;
+            _eyeOpenness = 0.8;
+            break;
+          case Emotion.surprised:
+            _pupilSize = 0.5;
+            _eyeOpenness = 1.0;
+            break;
+          case Emotion.curious:
+          case Emotion.focused:
+            _pupilSize = 0.3 + (0.1 * _emotionIntensity);
+            _eyeOpenness = 0.9;
+            break;
+          case Emotion.neutral:
+          case Emotion.confused:
+            _pupilSize = 0.3;
+            _eyeOpenness = 1.0;
+            break;
+        }
+
+        if (t >= 1.0) {
+          _currentEmotion = targetEmotion;
+          timer.cancel();
+        } else {
+          _currentEmotion = targetEmotion;
+        }
+
+        notifyListeners();
+      },
+    );
+  }
+
+  void setEyeState(EyeState state) {
+    _logger.i('Setting eye state to: $state');
+    _eyeState = state;
+    notifyListeners();
+  }
+
+  void setEyePosition(double x, double y) {
+    _logger.i('Setting eye position to: ($x, $y)');
+    _eyeX = x.clamp(-1.0, 1.0);
+    _eyeY = y.clamp(-1.0, 1.0);
+    notifyListeners();
+  }
+
+  void setSteeringAngle(double angle) {
+    _logger.i('Setting steering angle to: $angle');
+    _steeringAngle = angle.clamp(-45.0, 45.0);
+    notifyListeners();
+  }
+
+  void startTrackingPerson(String personId) {
+    _logger.i('Starting to track person: $personId');
+    _isTracking = true;
+    _trackedPersonId = personId;
+    _eyeState = EyeState.tracking;
+
+    _startTrackingAnimation();
+
+    notifyListeners();
+  }
+
+  void stopTracking() {
+    _logger.i('Stopping person tracking');
+    _isTracking = false;
+    _trackedPersonId = null;
+    _eyeState = EyeState.open;
+
+    _trackingTimer?.cancel();
+    _trackingTimer = null;
+
+    setEyePosition(0.0, 0.0);
+
+    notifyListeners();
+  }
+
+  void _startTrackingAnimation() {
+    _trackingTimer?.cancel();
+
+    _trackingTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+          (timer) {
+        if (!_isTracking) {
+          timer.cancel();
+          return;
+        }
+
+        final random = Random();
+        final targetX = (random.nextDouble() * 2 - 1) * 0.5;
+        final targetY = (random.nextDouble() * 2 - 1) * 0.5;
+
+        _eyeX = _eyeX + (targetX - _eyeX) * 0.3;
+        _eyeY = _eyeY + (targetY - _eyeY) * 0.3;
+
+        notifyListeners();
+      },
+    );
+  }
+
+  void _startBlinking() {
+    _blinkTimer?.cancel();
+
+    _blinkTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+          (timer) {
+        if (_isBlinking) {
+          _updateBlinkAnimation();
+        } else {
+          if (Random().nextDouble() < 0.05) {
+            _startBlinkAnimation();
+          }
+        }
+      },
+    );
+  }
+
+  void _startBlinkAnimation() {
+    _isBlinking = true;
+    _blinkProgress = 0.0;
+    _eyeState = EyeState.blinking;
+
+    _logger.d('Starting blink animation');
+  }
+
+  void _updateBlinkAnimation() {
+    const blinkSpeed = 0.2;
+    _blinkProgress += blinkSpeed;
+
+    if (_blinkProgress >= 1.0) {
+      _isBlinking = false;
+      _blinkProgress = 0.0;
+      _eyeState = EyeState.open;
+      _eyeOpenness = 1.0;
+
+      _logger.d('Blink animation completed');
     } else {
-      debugPrint('[EmotionDisplayProvider] $message');
+      if (_blinkProgress < 0.5) {
+        _eyeOpenness = 1.0 - (_blinkProgress * 2);
+      } else {
+        _eyeOpenness = (_blinkProgress - 0.5) * 2;
+      }
     }
+
+    notifyListeners();
   }
 
-  // ---- Lifecycle ----
+  void _startRandomEyeMovements() {
+    Timer.periodic(
+      const Duration(milliseconds: 1500),
+          (timer) {
+        if (_isTracking) return;
+
+        final random = Random();
+        final newX = (random.nextDouble() * 2 - 1) * 0.7;
+        final newY = (random.nextDouble() * 2 - 1) * 0.5;
+
+        setEyePosition(newX, newY);
+      },
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'emotion': _currentEmotion.toString(),
+      'eye_state': _eyeState.toString(),
+      'eye_x': _eyeX,
+      'eye_y': _eyeY,
+      'steering_angle': _steeringAngle,
+      'is_tracking': _isTracking,
+      'tracked_person_id': _trackedPersonId,
+      'blink_progress': _blinkProgress,
+      'is_blinking': _isBlinking,
+      'pupil_size': _pupilSize,
+      'eye_openness': _eyeOpenness,
+      'emotion_intensity': _emotionIntensity,
+    };
+  }
+
+  // ===== various update integrations (unchanged behavior) =====
+
+  void updateFromSensorData({
+    double? steeringAngle,
+    bool? isMoving,
+    double? speed,
+  }) {
+    if (steeringAngle != null) {
+      setSteeringAngle(steeringAngle);
+    }
+
+    if (isMoving != null && speed != null) {
+      if (isMoving && speed > 0.1) {
+        _eyeOpenness = (1.0 - (speed / 100.0)).clamp(0.6, 1.0);
+
+        if (speed > 20.0) {
+          setEmotion(Emotion.excited, intensity: 0.7);
+        } else if (speed > 5.0) {
+          setEmotion(Emotion.curious, intensity: 0.5);
+        }
+      } else {
+        _eyeOpenness = 1.0;
+      }
+    }
+
+    notifyListeners();
+  }
+
+  void updateForObstacleDetection({
+    bool? obstacleDetected,
+    double? obstacleDistance,
+  }) {
+    if (obstacleDetected == true) {
+      _eyeState = EyeState.looking;
+      setEmotion(Emotion.curious, intensity: 0.6);
+
+      if (obstacleDistance != null && obstacleDistance < 1.0) {
+        setEmotion(Emotion.surprised, intensity: 0.8);
+      }
+    } else {
+      _eyeState = EyeState.open;
+    }
+
+    notifyListeners();
+  }
+
+  void updateForFaceDetection({
+    bool? faceDetected,
+    bool? isRecognized,
+    String? personId,
+  }) {
+    if (faceDetected == true) {
+      if (isRecognized == true && personId != null) {
+        startTrackingPerson(personId);
+        setEmotion(Emotion.happy, intensity: 0.8);
+      } else {
+        _eyeState = EyeState.looking;
+        setEmotion(Emotion.curious, intensity: 0.6);
+      }
+    } else {
+      stopTracking();
+      setEmotion(Emotion.neutral);
+    }
+
+    notifyListeners();
+  }
+
+  void updateForSystemState({
+    bool? isConnectedToPi,
+    bool? isViamConnected,
+  }) {
+    if (isConnectedToPi == false || isViamConnected == false) {
+      setEmotion(Emotion.confused, intensity: 0.7);
+      _eyeState = EyeState.halfOpen;
+    } else {
+      if (_currentEmotion == Emotion.confused) {
+        setEmotion(Emotion.neutral);
+        _eyeState = EyeState.open;
+      }
+    }
+
+    notifyListeners();
+  }
+
+  void updateForAudioLevel(double audioLevel) {
+    _pupilSize = (0.3 + (audioLevel * 0.3)).clamp(0.2, 0.6);
+    _eyeOpenness = (1.0 - (audioLevel * 0.2)).clamp(0.8, 1.0);
+    notifyListeners();
+  }
+
+  void updateForLightingConditions(double brightness) {
+    _pupilSize = (0.6 - (brightness * 0.4)).clamp(0.2, 0.6);
+    notifyListeners();
+  }
+
+  void applyManualOverride({
+    Emotion? emotion,
+    EyeState? eyeState,
+    double? eyeX,
+    double? eyeY,
+    double? pupilSize,
+    double? eyeOpenness,
+  }) {
+    if (emotion != null) {
+      setEmotion(emotion);
+    }
+
+    if (eyeState != null) {
+      setEyeState(eyeState);
+    }
+
+    if (eyeX != null || eyeY != null) {
+      setEyePosition(
+        eyeX ?? _eyeX,
+        eyeY ?? _eyeY,
+      );
+    }
+
+    if (pupilSize != null) {
+      _pupilSize = pupilSize.clamp(0.1, 0.8);
+    }
+
+    if (eyeOpenness != null) {
+      _eyeOpenness = eyeOpenness.clamp(0.0, 1.0);
+    }
+
+    notifyListeners();
+  }
+
+  void resetToDefault() {
+    _currentEmotion = Emotion.neutral;
+    _eyeState = EyeState.open;
+    _eyeX = 0.0;
+    _eyeY = 0.0;
+    _steeringAngle = 0.0;
+    _isTracking = false;
+    _trackedPersonId = null;
+    _blinkProgress = 0.0;
+    _isBlinking = false;
+    _pupilSize = 0.3;
+    _eyeOpenness = 1.0;
+    _emotionIntensity = 0.0;
+
+    notifyListeners();
+  }
+
+  void updateFromExternalState(Map<String, dynamic> state) {
+    if (state.containsKey('emotion')) {
+      final emotionStr = state['emotion'].toString().toLowerCase();
+      switch (emotionStr) {
+        case 'happy':
+          setEmotion(Emotion.happy);
+          break;
+        case 'sad':
+          setEmotion(Emotion.sad);
+          break;
+        case 'angry':
+          setEmotion(Emotion.angry);
+          break;
+        case 'surprised':
+          setEmotion(Emotion.surprised);
+          break;
+        case 'curious':
+          setEmotion(Emotion.curious);
+          break;
+        case 'focused':
+          setEmotion(Emotion.focused);
+          break;
+        case 'sleepy':
+          setEmotion(Emotion.sleepy);
+          break;
+        case 'excited':
+          setEmotion(Emotion.excited);
+          break;
+        case 'confused':
+          setEmotion(Emotion.confused);
+          break;
+        default:
+          setEmotion(Emotion.neutral);
+      }
+    }
+
+    if (state.containsKey('eye_state')) {
+      final eyeStateStr = state['eye_state'].toString().toLowerCase();
+      switch (eyeStateStr) {
+        case 'open':
+          _eyeState = EyeState.open;
+          break;
+        case 'halfopen':
+          _eyeState = EyeState.halfOpen;
+          break;
+        case 'closed':
+          _eyeState = EyeState.closed;
+          break;
+        case 'blinking':
+          _eyeState = EyeState.blinking;
+          break;
+        case 'looking':
+          _eyeState = EyeState.looking;
+          break;
+        case 'tracking':
+          _eyeState = EyeState.tracking;
+          break;
+        default:
+          _eyeState = EyeState.open;
+      }
+    }
+
+    if (state.containsKey('eye_x')) {
+      _eyeX = (state['eye_x'] as num).toDouble().clamp(-1.0, 1.0);
+    }
+
+    if (state.containsKey('eye_y')) {
+      _eyeY = (state['eye_y'] as num).toDouble().clamp(-1.0, 1.0);
+    }
+
+    if (state.containsKey('pupil_size')) {
+      _pupilSize = (state['pupil_size'] as num).toDouble().clamp(0.1, 0.8);
+    }
+
+    if (state.containsKey('eye_openness')) {
+      _eyeOpenness = (state['eye_openness'] as num).toDouble().clamp(0.0, 1.0);
+    }
+
+    notifyListeners();
+  }
 
   @override
   void dispose() {
-    _blinkController.dispose();
-    _randomMovementController.dispose();
+    _blinkTimer?.cancel();
+    _emotionTimer?.cancel();
+    _trackingTimer?.cancel();
     _headPollTimer?.cancel();
     super.dispose();
   }
 }
-
