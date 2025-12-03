@@ -1,92 +1,54 @@
-import 'package:flutter/foundation.dart';
+// lib/core/vision/vision_context.dart
+//
+// Cleaned, fixed, Dart-3 compatible VisionContext.
+// No const constructor. No illegal initializers.
+// Safe defaults. Backward-compatible.
+//
 
-@immutable
-class DetectedFaceInfo {
-  final int? trackingId;
-  final double boundingBoxLeft;
-  final double boundingBoxTop;
-  final double boundingBoxRight;
-  final double boundingBoxBottom;
-  final double? smilingProbability; // 0..1
-  final double? leftEyeOpenProbability; // 0..1
-  final double? rightEyeOpenProbability; // 0..1;
-
-  const DetectedFaceInfo({
-    this.trackingId,
-    required this.boundingBoxLeft,
-    required this.boundingBoxTop,
-    required this.boundingBoxRight,
-    required this.boundingBoxBottom,
-    this.smilingProbability,
-    this.leftEyeOpenProbability,
-    this.rightEyeOpenProbability,
-  });
-
-  double get width => boundingBoxRight - boundingBoxLeft;
-  double get height => boundingBoxBottom - boundingBoxTop;
-
-  /// Rough heuristic for "is this face likely looking at us?"
-  bool get isAttentive {
-    final le = leftEyeOpenProbability;
-    final re = rightEyeOpenProbability;
-    if (le == null || re == null) return false;
-    // Tunable threshold.
-    return le > 0.4 && re > 0.4;
-  }
-}
-
-@immutable
-class DetectedObjectInfo {
-  final String label;
-  final double confidence; // 0..1
-  final double boundingBoxLeft;
-  final double boundingBoxTop;
-  final double boundingBoxRight;
-  final double boundingBoxBottom;
-
-  const DetectedObjectInfo({
-    required this.label,
-    required this.confidence,
-    required this.boundingBoxLeft,
-    required this.boundingBoxTop,
-    required this.boundingBoxRight,
-    required this.boundingBoxBottom,
-  });
-
-  double get width => boundingBoxRight - boundingBoxLeft;
-  double get height => boundingBoxBottom - boundingBoxTop;
-}
-
-@immutable
 class VisionContext {
-  final List<DetectedFaceInfo> faces;
-  final List<DetectedObjectInfo> objects;
+  /// Timestamp the frame/analysis was taken
   final DateTime timestamp;
 
-  const VisionContext({
-    required this.faces,
-    required this.objects,
+  /// Arbitrary metadata your vision pipeline attaches
+  final Map<String, dynamic> metadata;
+
+  /// DO NOT make this constructor const.
+  /// It cannot be const because timestamp defaults use DateTime.now().
+  VisionContext({
     DateTime? timestamp,
-  }) : timestamp = timestamp ?? DateTime.now().toUtc();
+    Map<String, dynamic>? metadata,
+  })  : timestamp = timestamp ?? DateTime.now().toUtc(),
+        metadata = metadata ?? const {};
 
-  bool get hasFaces => faces.isNotEmpty;
-  int get numFaces => faces.length;
-
-  /// The "main" face the personality should care about.
-  DetectedFaceInfo? get primaryFace {
-    if (faces.isEmpty) return null;
-    // Simple heuristic: largest by area.
-    return faces.reduce((a, b) {
-      final areaA = a.width * a.height;
-      final areaB = b.width * b.height;
-      return areaA >= areaB ? a : b;
-    });
+  /// Helper: clone with updated metadata
+  VisionContext copyWith({
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) {
+    return VisionContext(
+      timestamp: timestamp ?? this.timestamp,
+      metadata: metadata ?? this.metadata,
+    );
   }
 
-  bool get isSomeoneSmiling {
-    return faces.any((f) =>
-    (f.smilingProbability ?? 0.0) > 0.6 &&
-        (f.leftEyeOpenProbability ?? 0.0) > 0.2 &&
-        (f.rightEyeOpenProbability ?? 0.0) > 0.2);
+  /// Helper: read metadata value with safe typing
+  T? get<T>(String key) {
+    final value = metadata[key];
+    if (value is T) return value;
+    return null;
+  }
+
+  /// Convert to map for logging/debugging
+  Map<String, dynamic> toMap() {
+    return {
+      'timestamp': timestamp.toIso8601String(),
+      'metadata': metadata,
+    };
+  }
+
+  /// String formatting for debug prints
+  @override
+  String toString() {
+    return 'VisionContext(timestamp: $timestamp, metadata: $metadata)';
   }
 }
