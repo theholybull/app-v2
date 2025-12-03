@@ -1,11 +1,16 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' show Point;
+import 'dart:ui' show Rect, Offset;
+
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
-import 'package:camera/camera.dart';
 import 'package:logger/logger.dart';
-import 'dart:async';
-import 'dart:ui' show Rect, Offset;
-import 'dart:math' show Point;
-import 'dart:io';
+
+// Adjust these imports if your folder layout differs.
+import '../core/vision/vision_service.dart';
+import '../core/vision/vision_context.dart';
 
 class DetectedFace {
   final String id;
@@ -54,8 +59,14 @@ class DetectedFace {
 }
 
 class FaceDetectionProvider extends ChangeNotifier {
+  FaceDetectionProvider({VisionService? visionService})
+      : _visionService = visionService;
+
   final Logger _logger = Logger();
-  
+
+  /// Optional shared VisionService so personality/avatars can react to faces.
+  final VisionService? _visionService;
+
   FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableClassification: true,
@@ -66,25 +77,26 @@ class FaceDetectionProvider extends ChangeNotifier {
       performanceMode: FaceDetectorMode.accurate,
     ),
   );
-  
+
   List<DetectedFace> _detectedFaces = [];
   String? _trackedFaceId;
   bool _isDetecting = false;
   bool _isInitialized = false;
+  bool _isProcessingFrame = false;
   CameraController? _cameraController;
   Timer? _detectionTimer;
-  
+
   // Face tracking parameters
   int _nextFaceId = 1;
   final Map<String, DateTime> _lastSeen = {};
   static const Duration _faceTimeout = Duration(seconds: 5);
-  
+
   // Detection settings
   double _detectionConfidence = 0.7;
   bool _enableSmileDetection = true;
   bool _enableEyeTracking = true;
   bool _enableHeadPose = true;
-  
+
   // Getters
   List<DetectedFace> get detectedFaces => List.unmodifiable(_detectedFaces);
   String? get trackedFaceId => _trackedFaceId;
@@ -94,12 +106,11 @@ class FaceDetectionProvider extends ChangeNotifier {
   bool get enableSmileDetection => _enableSmileDetection;
   bool get enableEyeTracking => _enableEyeTracking;
   bool get enableHeadPose => _enableHeadPose;
-  
+
   Future<void> initialize() async {
     _logger.i('Initializing face detection provider...');
-    
+
     try {
-      // Initialize face detector
       await _faceDetector.close();
       _faceDetector = FaceDetector(
         options: FaceDetectorOptions(
@@ -111,39 +122,51 @@ class FaceDetectionProvider extends ChangeNotifier {
           performanceMode: FaceDetectorMode.accurate,
         ),
       );
-      
+
       _isInitialized = true;
       _logger.i('Face detection initialized successfully');
       notifyListeners();
+
+      // If camera was already set, kick detection back on.
+      if (_cameraController != null && !_isDetecting) {
+        startDetection();
+      }
     } catch (e) {
       _logger.e('Error initializing face detection: $e');
+      _isInitialized = false;
+      notifyListeners();
     }
   }
-  
+
   void setCameraController(CameraController? controller) {
     _cameraController = controller;
-    
+
     if (controller != null && _isInitialized && !_isDetecting) {
       startDetection();
     } else if (controller == null) {
       stopDetection();
     }
   }
-  
+
   Future<void> startDetection() async {
     if (_isDetecting || _cameraController == null || !_isInitialized) return;
-    
+
+    if (!_cameraController!.value.isInitialized) {
+      _logger.w('CameraController is not initialized; cannot start detection.');
+      return;
+    }
+
     _logger.i('Starting face detection...');
     _isDetecting = true;
     notifyListeners();
-    
-    // Start periodic face detection
+
     _detectionTimer?.cancel();
-    _detectionTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      _detectFaces();
-    });
+    _detectionTimer = Timer.periodic(
+      const Duration(milliseconds: 250),
+          (_) => _detectFaces(),
+    );
   }
-  
+
   Future<void> stopDetection() async {
     _logger.i('Stopping face detection...');
     _isDetecting = false;
@@ -151,71 +174,74 @@ class FaceDetectionProvider extends ChangeNotifier {
     _detectionTimer = null;
     notifyListeners();
   }
-  
+
   Future<void> _detectFaces() async {
     if (!_isDetecting || _cameraController == null) return;
-    
+    if (_isProcessingFrame) return; // avoid overlapping work
+
+    _isProcessingFrame = true;
     try {
-      // Get current camera frame
-      final image = await _cameraController?.takePicture();
-      if (image == null) return;
-      
+      // Take a still frame. This is heavier than an image stream but simpler
+      // and more reliable as a starting point.
+      final image = await _cameraController!.takePicture();
+
       // Convert to InputImage for ML Kit
-      final inputImage = await _convertImageToInputImage(image);
-      if (inputImage == null) return;
-      
-      // Detect faces
+      final inputImage = _convertImageToInputImage(image);
+      if (inputImage == null) {
+        _isProcessingFrame = false;
+        return;
+      }
+
+      // Run ML Kit
       final faces = await _faceDetector.processImage(inputImage);
-      
-      // Process detected faces
+
+      // Process detected faces → internal list + VisionService
       await _processDetectedFaces(faces);
-      
+
       // Clean up old faces
       _cleanupOldFaces();
-      
+
       // Clean up temporary image file
-      await File(image.path).delete();
-      
+      try {
+        final file = File(image.path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        _logger.w('Failed to delete temp image: $e');
+      }
     } catch (e) {
       _logger.e('Error detecting faces: $e');
+    } finally {
+      _isProcessingFrame = false;
     }
   }
-  
-  Future<InputImage?> _convertImageToInputImage(XFile imageFile) async {
+
+  InputImage? _convertImageToInputImage(XFile imageFile) {
     try {
-      final file = File(imageFile.path);
-      final bytes = await file.readAsBytes();
-      
-      // Create InputImage from file
-      final inputImage = InputImage.fromFilePath(imageFile.path);
-      return inputImage;
+      // ML Kit will handle EXIF orientation when using fromFilePath.
+      return InputImage.fromFilePath(imageFile.path);
     } catch (e) {
       _logger.e('Error converting image to InputImage: $e');
       return null;
     }
   }
-  
+
   Future<void> _processDetectedFaces(List<Face> faces) async {
     final newFaces = <DetectedFace>[];
     final now = DateTime.now();
-    
+
     for (final face in faces) {
-      // Get face classification
-      String? faceId;
-      
-      // Try to match with existing face (simple tracking)
-      faceId = _findMatchingFace(face);
-      
+      // Try to match with an existing face based on bounding box proximity.
+      String? faceId = _findMatchingFace(face);
+
       if (faceId == null) {
-        // New face detected
         faceId = 'face_$_nextFaceId';
         _nextFaceId++;
       }
-      
-      // Update last seen time
+
       _lastSeen[faceId] = now;
-      
-      // Create detected face object
+
       final detectedFace = DetectedFace(
         id: faceId,
         boundingBox: face.boundingBox,
@@ -230,105 +256,135 @@ class FaceDetectionProvider extends ChangeNotifier {
         headEulerAngleZ: face.headEulerAngleZ,
         timestamp: now,
       );
-      
+
+      // Optionally respect detectionConfidence by requiring some signal.
+      if (_enableSmileDetection && detectedFace.smilingProbability != null) {
+        if (detectedFace.smilingProbability! < _detectionConfidence) {
+          // Low-confidence smile; still keep the face, just don't treat it as "smiling".
+        }
+      }
+
       newFaces.add(detectedFace);
-      
-      // Auto-track the first face if no face is being tracked
+
+      // Auto-track the first face if nothing is tracked.
       if (_trackedFaceId == null) {
         _trackedFaceId = faceId;
         _logger.i('Started tracking face: $faceId');
       }
     }
-    
+
     _detectedFaces = newFaces;
     notifyListeners();
+
+    // Also update the global VisionContext if a VisionService is provided.
+    if (_visionService != null) {
+      final vcFaces = _detectedFaces
+          .map(
+            (f) => DetectedFaceInfo(
+          trackingId: int.tryParse(f.id.replaceFirst('face_', '')),
+          boundingBoxLeft: f.boundingBox.left,
+          boundingBoxTop: f.boundingBox.top,
+          boundingBoxRight: f.boundingBox.right,
+          boundingBoxBottom: f.boundingBox.bottom,
+          smilingProbability: f.smilingProbability,
+          leftEyeOpenProbability: f.leftEyeOpenProbability,
+          rightEyeOpenProbability: f.rightEyeOpenProbability,
+        ),
+      )
+          .toList();
+
+      final ctx = VisionContext(
+        faces: vcFaces,
+        objects: const [], // object detection comes later
+      );
+
+      _visionService!.updateContext(ctx);
+    }
   }
-  
+
   String? _findMatchingFace(Face newFace) {
     if (_detectedFaces.isEmpty) return null;
-    
-    // Simple matching based on bounding box proximity
+
     String? bestMatch;
     double bestDistance = double.infinity;
-    
+
     for (final existingFace in _detectedFaces) {
       final distance = _calculateBoxDistance(
         newFace.boundingBox,
         existingFace.boundingBox,
       );
-      
-      if (distance < bestDistance && distance < 100.0) { // Threshold for matching
+
+      if (distance < bestDistance && distance < 100.0) {
         bestMatch = existingFace.id;
         bestDistance = distance;
       }
     }
-    
+
     return bestMatch;
   }
-  
+
   double _calculateBoxDistance(Rect box1, Rect box2) {
     final center1 = box1.center;
     final center2 = box2.center;
-    
     return (center1 - center2).distance;
   }
-  
+
   void _cleanupOldFaces() {
     final now = DateTime.now();
     final facesToRemove = <String>[];
-    
+
     _lastSeen.forEach((faceId, lastSeen) {
       if (now.difference(lastSeen) > _faceTimeout) {
         facesToRemove.add(faceId);
       }
     });
-    
+
     for (final faceId in facesToRemove) {
       _lastSeen.remove(faceId);
       _detectedFaces.removeWhere((face) => face.id == faceId);
-      
+
       if (_trackedFaceId == faceId) {
         _trackedFaceId = null;
         _logger.i('Stopped tracking face: $faceId');
       }
     }
-    
+
     if (facesToRemove.isNotEmpty) {
       notifyListeners();
     }
   }
-  
+
   void trackFace(String? faceId) {
     _trackedFaceId = faceId;
     _logger.i('Tracking face: $faceId');
     notifyListeners();
   }
-  
+
   void untrackFace() {
     _trackedFaceId = null;
     _logger.i('Stopped tracking all faces');
     notifyListeners();
   }
-  
+
   DetectedFace? getTrackedFace() {
     if (_trackedFaceId == null) return null;
     try {
       return _detectedFaces.firstWhere((face) => face.id == _trackedFaceId);
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
-  
+
   Point<double>? getTrackedFaceCenter() {
     final trackedFace = getTrackedFace();
     if (trackedFace == null) return null;
-    
+
     return Point<double>(
       trackedFace.boundingBox.center.dx,
       trackedFace.boundingBox.center.dy,
     );
   }
-  
+
   Map<String, dynamic> getDetectionStatus() {
     return {
       'is_detecting': _isDetecting,
@@ -342,7 +398,7 @@ class FaceDetectionProvider extends ChangeNotifier {
       'faces': _detectedFaces.map((face) => face.toJson()).toList(),
     };
   }
-  
+
   void updateSettings({
     double? detectionConfidence,
     bool? enableSmileDetection,
@@ -361,11 +417,10 @@ class FaceDetectionProvider extends ChangeNotifier {
     if (enableHeadPose != null) {
       _enableHeadPose = enableHeadPose;
     }
-    
-    // Reinitialize with new settings
+
     initialize();
   }
-  
+
   @override
   void dispose() {
     stopDetection();

@@ -13,20 +13,21 @@ import 'providers/face_detection_provider.dart';
 import 'screens/home_screen.dart';
 import 'services/permission_service.dart';
 import 'services/background_service.dart';
+import 'core/vision/vision_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Set preferred orientations
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
-  
+
   // Initialize permission service
   await PermissionService.initialize();
-  
+
   // Initialize background service handlers
   BackgroundService.initializeServiceHandlers(
     onUsbAttached: (data) {
@@ -38,11 +39,13 @@ void main() async {
       // Will be handled by providers
     },
     onAutoStart: (data) {
-      print('Auto-start triggered at: ${DateTime.fromMillisecondsSinceEpoch(data['timestamp'])}');
+      print(
+        'Auto-start triggered at: ${DateTime.fromMillisecondsSinceEpoch(data['timestamp'])}',
+      );
       // Will be handled by providers
     },
   );
-  
+
   runApp(const ViamPixel4aApp());
 }
 
@@ -53,13 +56,29 @@ class ViamPixel4aApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => SensorProvider()..startMonitoring()),
+        // Shared vision context for personality/avatars
+        ChangeNotifierProvider(create: (_) => VisionService()),
+
+        // Existing providers
+        ChangeNotifierProvider(
+          create: (_) => SensorProvider()..startMonitoring(),
+        ),
         ChangeNotifierProvider(create: (_) => AudioProvider()),
         ChangeNotifierProvider(create: (_) => CameraProvider()),
         ChangeNotifierProvider(create: (_) => ViamProvider()),
         ChangeNotifierProvider(create: (_) => PiConnectionProvider()),
         ChangeNotifierProvider(create: (_) => EmotionDisplayProvider()),
-        ChangeNotifierProvider(create: (_) => FaceDetectionProvider()),
+
+        // Face detection wired into VisionService
+        ChangeNotifierProvider(
+          create: (context) {
+            final visionService = context.read<VisionService>();
+            final provider =
+            FaceDetectionProvider(visionService: visionService);
+            provider.initialize();
+            return provider;
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'Viam Pi Integration',
