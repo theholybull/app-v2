@@ -1,54 +1,109 @@
 // lib/core/vision/vision_context.dart
 //
-// Cleaned, fixed, Dart-3 compatible VisionContext.
-// No const constructor. No illegal initializers.
-// Safe defaults. Backward-compatible.
-//
+// Lightweight vision data models used across providers and services.
 
+/// Simple face description coming from the camera / ML pipeline.
+class DetectedFaceInfo {
+  final int? trackingId;
+
+  /// Normalized bounding box coordinates in [0,1] relative to the frame.
+  final double boundingBoxLeft;
+  final double boundingBoxTop;
+  final double boundingBoxRight;
+  final double boundingBoxBottom;
+
+  /// Optional probabilities from the detector.
+  final double? smilingProbability;
+  final double? leftEyeOpenProbability;
+  final double? rightEyeOpenProbability;
+
+  const DetectedFaceInfo({
+    this.trackingId,
+    required this.boundingBoxLeft,
+    required this.boundingBoxTop,
+    required this.boundingBoxRight,
+    required this.boundingBoxBottom,
+    this.smilingProbability,
+    this.leftEyeOpenProbability,
+    this.rightEyeOpenProbability,
+  });
+}
+
+/// Placeholder object description so we can extend later without breaking API.
+class DetectedObjectInfo {
+  final String label;
+  final double confidence;
+
+  const DetectedObjectInfo({
+    required this.label,
+    required this.confidence,
+  });
+}
+
+/// Aggregated vision snapshot that other parts of the app can consume.
 class VisionContext {
-  /// Timestamp the frame/analysis was taken
+  /// Faces detected in the current frame.
+  final List<DetectedFaceInfo> faces;
+
+  /// Objects detected in the current frame (if/when we add them).
+  final List<DetectedObjectInfo> objects;
+
+  /// When this context was captured.
   final DateTime timestamp;
 
-  /// Arbitrary metadata your vision pipeline attaches
+  /// Optional extra metadata (lighting, frame stats, etc).
   final Map<String, dynamic> metadata;
 
-  /// DO NOT make this constructor const.
-  /// It cannot be const because timestamp defaults use DateTime.now().
+  /// Do NOT make this constructor const; it uses DateTime.now().
   VisionContext({
+    List<DetectedFaceInfo>? faces,
+    List<DetectedObjectInfo>? objects,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  })  : timestamp = timestamp ?? DateTime.now().toUtc(),
+  })  : faces = faces ?? const [],
+        objects = objects ?? const [],
+        timestamp = timestamp ?? DateTime.now().toUtc(),
         metadata = metadata ?? const {};
 
-  /// Helper: clone with updated metadata
-  VisionContext copyWith({
-    DateTime? timestamp,
-    Map<String, dynamic>? metadata,
-  }) {
-    return VisionContext(
-      timestamp: timestamp ?? this.timestamp,
-      metadata: metadata ?? this.metadata,
-    );
-  }
+  /// Convenience: empty snapshot.
+  factory VisionContext.empty() => VisionContext();
 
-  /// Helper: read metadata value with safe typing
-  T? get<T>(String key) {
-    final value = metadata[key];
-    if (value is T) return value;
-    return null;
-  }
+  /// True if we have at least one face.
+  bool get hasFaces => faces.isNotEmpty;
 
-  /// Convert to map for logging/debugging
+  /// Number of faces in this snapshot.
+  int get numFaces => faces.length;
+
+  /// Convert to a simple map for logging / debugging.
   Map<String, dynamic> toMap() {
     return {
       'timestamp': timestamp.toIso8601String(),
+      'faces': faces
+          .map((f) => {
+        'trackingId': f.trackingId,
+        'bbox': [
+          f.boundingBoxLeft,
+          f.boundingBoxTop,
+          f.boundingBoxRight,
+          f.boundingBoxBottom,
+        ],
+        'smile': f.smilingProbability,
+        'leftEye': f.leftEyeOpenProbability,
+        'rightEye': f.rightEyeOpenProbability,
+      })
+          .toList(),
+      'objects': objects
+          .map((o) => {
+        'label': o.label,
+        'confidence': o.confidence,
+      })
+          .toList(),
       'metadata': metadata,
     };
   }
 
-  /// String formatting for debug prints
   @override
-  String toString() {
-    return 'VisionContext(timestamp: $timestamp, metadata: $metadata)';
-  }
+  String toString() =>
+      'VisionContext(timestamp: $timestamp, faces: ${faces.length}, objects: ${objects.length}, metadata: $metadata)';
 }
+

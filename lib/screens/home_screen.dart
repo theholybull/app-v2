@@ -1,21 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../providers/sensor_provider.dart';
-import '../providers/audio_provider.dart';
-import '../providers/camera_provider.dart';
-import '../providers/viam_provider.dart';
-import '../providers/pi_connection_provider.dart';
-import '../providers/emotion_display_provider.dart';
-import '../providers/face_detection_provider.dart';
+import 'package:viam_pixel4a_sensors/widgets/pi_connection_widget.dart';
+import 'package:viam_pixel4a_sensors/widgets/viam_connection.dart';
+import 'package:viam_pixel4a_sensors/widgets/sensor_card.dart';
+import 'package:viam_pixel4a_sensors/widgets/camera_preview.dart';
+import 'package:viam_pixel4a_sensors/widgets/audio_controls.dart';
+import 'package:viam_pixel4a_sensors/widgets/emotion_display.dart';
+import 'package:viam_pixel4a_sensors/widgets/face_detection_controls.dart';
+import 'package:viam_pixel4a_sensors/widgets/personality_panel.dart';
+import 'package:viam_pixel4a_sensors/widgets/device_info_card.dart';
 
-import '../widgets/sensor_card.dart';
-import '../widgets/audio_controls.dart';
-import '../widgets/camera_preview.dart';
-import '../widgets/viam_connection.dart';
-import '../widgets/device_info_card.dart';
-import '../widgets/pi_connection_widget.dart';
-import '../widgets/emotion_display.dart';
+import 'package:viam_pixel4a_sensors/providers/pi_connection_provider.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -25,209 +21,154 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _isTestingSensors = false;
-  bool _headSyncStarted = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initializeProviders();
-  }
-
-  Future<void> _initializeProviders() async {
-    // Initialize all the providers once on startup
-    await Provider.of<SensorProvider>(context, listen: false).initialize();
-    await Provider.of<AudioProvider>(context, listen: false).initialize();
-    await Provider.of<CameraProvider>(context, listen: false).initialize();
-    await Provider.of<PiConnectionProvider>(context, listen: false).initialize();
-    await Provider.of<EmotionDisplayProvider>(context, listen: false).initialize();
-    await Provider.of<FaceDetectionProvider>(context, listen: false).initialize();
-
-    // Start sensor monitoring loop
-    Provider.of<SensorProvider>(context, listen: false).startMonitoring();
-    // NOTE: we do NOT start head-backend sync here anymore,
-    // because Pi IP might not be known yet.
-  }
-
   @override
   Widget build(BuildContext context) {
-    // Watch Pi connection status here so we can start head-backend sync
-    // as soon as we actually know the Pi's IP.
-    final piProvider = Provider.of<PiConnectionProvider>(context);
-    final emotionProvider =
-    Provider.of<EmotionDisplayProvider>(context, listen: false);
-    final status = piProvider.connectionStatus;
+    final piProvider = context.watch<PiConnectionProvider>();
 
-    if (!_headSyncStarted &&
-        status.piAddress != null &&
-        status.piAddress!.isNotEmpty) {
-      _headSyncStarted = true;
-      final baseUrl = 'http://${status.piAddress}:8090';
-
-      // Defer the call to after this frame so we don't do side-effects
-      // during build.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        emotionProvider.startHeadBackendSync(baseUrl);
-      });
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Viam Pi Integration'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () => _showAppInfoDialog(context),
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Kilo Head Control'),
+          centerTitle: false,
+          bottom: const TabBar(
+            isScrollable: true,
+            tabs: [
+              Tab(icon: Icon(Icons.dashboard), text: 'Dashboard'),
+              Tab(icon: Icon(Icons.face_retouching_natural), text: 'Avatar & Rig'),
+              Tab(icon: Icon(Icons.chat_bubble_outline), text: 'AI'),
+            ],
           ),
-          IconButton(
-            icon: const Icon(Icons.bug_report),
-            onPressed: () => _showLogDialog(context),
+        ),
+        body: TabBarView(
+          children: [
+            // --- TAB 1: DASHBOARD ---
+            _buildDashboardTab(context, piProvider),
+
+            // --- TAB 2: AVATAR & RIG (eyes/head/human avatar/pogo stick) ---
+            _buildAvatarTab(context),
+
+            // --- TAB 3: AI (placeholder for now, API wiring next) ---
+            _buildAiTab(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDashboardTab(
+      BuildContext context,
+      PiConnectionProvider piProvider,
+      ) {
+    return RefreshIndicator(
+      onRefresh: () async {
+        // Simple hook point if you want to re-ping the Pi or Viam later.
+        await piProvider.refreshStatus();
+      },
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: const [
+            // Pi connection + health
+            PiConnectionWidget(),
+            SizedBox(height: 12),
+
+            // Viam connection card
+            ViamConnectionWidget(),
+            SizedBox(height: 12),
+
+            // Device info / sensors
+            DeviceInfoCard(),
+            SizedBox(height: 12),
+
+            SensorCard(),
+            SizedBox(height: 12),
+
+            // Camera feed
+            CameraPreviewCard(),
+            SizedBox(height: 12),
+
+            // Audio controls
+            AudioControls(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarTab(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const EmotionDisplay(),
+          const SizedBox(height: 12),
+          const FaceDetectionControls(),
+          const SizedBox(height: 12),
+          const PersonalityPanel(),
+          const SizedBox(height: 12),
+
+          // Placeholder for sprite / avatar sheet config.
+          // This keeps the concept in from day one; we’ll wire storage + file
+          // selection + Pi sync on the next pass.
+          Card(
+            elevation: 2,
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    'Avatar Sprites & Rig',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'This is where you’ll hook up sprite sheets and avatar '
+                        'definitions for human avatars, robot heads, pogo sticks, '
+                        'or whatever else you strap this brain onto.\n\n'
+                        'Next step: we’ll add fields to point at sprite PNGs / '
+                        'atlas JSON and sync that config back to the Pi.',
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
-      body: Consumer4<SensorProvider, AudioProvider, CameraProvider, ViamProvider>(
-        builder: (context, sensorProvider, audioProvider, cameraProvider,
-            viamProvider, child) {
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Pi connection / network to the Pi box
-                const PiConnectionWidget(),
-                const SizedBox(height: 16),
-
-                // Device info
-                const DeviceInfoCard(),
-                const SizedBox(height: 16),
-
-                // Eyes / emotion display
-                const EmotionDisplay(),
-                const SizedBox(height: 16),
-
-                // Camera preview + controls
-                const CameraPreview(),
-                const SizedBox(height: 16),
-
-                // Sensor data
-                const SensorCard(),
-                const SizedBox(height: 16),
-
-                // Audio controls
-                const AudioControls(),
-                const SizedBox(height: 16),
-
-                // Viam connection status
-                const ViamStatusWidget(),
-                const SizedBox(height: 16),
-
-                // Diagnostics
-                _buildTestButtons(context, sensorProvider),
-              ],
-            ),
-          );
-        },
-      ),
     );
   }
 
-  Widget _buildTestButtons(BuildContext context, SensorProvider sensorProvider) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Diagnostics',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ElevatedButton.icon(
-              icon: const Icon(Icons.sensors),
-              label: _isTestingSensors
-                  ? const Text('Testing Sensors...')
-                  : const Text('Test Sensors'),
-              onPressed: _isTestingSensors ? null : _testSensors,
+  Widget _buildAiTab(BuildContext context) {
+    // For now this is just a clean shell; next step,
+    // we drop in the AI provider + chat UI + API calls.
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.chat_bubble_outline, size: 48),
+            SizedBox(height: 16),
+            Text(
+              'AI brain hookup is next.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18),
             ),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh Providers'),
-              onPressed: _refreshProviders,
+            SizedBox(height: 8),
+            Text(
+              'This tab will host the persona-aware chat, adult-mode toggle, '
+                  'and whatever API we bolt on (Pi local or cloud).',
+              textAlign: TextAlign.center,
             ),
           ],
         ),
-      ],
-    );
-  }
-
-  Future<void> _testSensors() async {
-    setState(() {
-      _isTestingSensors = true;
-    });
-
-    try {
-      await _testAllSensors();
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isTestingSensors = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _refreshProviders() async {
-    await _initializeProviders();
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Providers refreshed')),
-    );
-  }
-
-  Future<void> _testAllSensors() async {
-    final sensorProvider = Provider.of<SensorProvider>(context, listen: false);
-    final accelerometerData = sensorProvider.accelerometerData;
-    final gyroscopeData = sensorProvider.gyroscopeData;
-    final magnetometerData = sensorProvider.magnetometerData;
-
-    if (!mounted) return;
-
-    String message = 'Sensor test completed - ';
-    message += accelerometerData != null ? 'ACC OK ' : 'ACC NO ';
-    message += gyroscopeData != null ? 'GYR OK ' : 'GYR NO ';
-    message += magnetometerData != null ? 'MAG OK' : 'MAG NO';
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  void _showAppInfoDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => const AlertDialog(
-        title: Text('App Information'),
-        content: Text(
-          'This app integrates the Pixel with the Raspberry Pi running Viam.\n\n'
-              'It shows eyes, sensor data, camera preview, and connection status.',
-        ),
-      ),
-    );
-  }
-
-  void _showLogDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => const AlertDialog(
-        title: Text('Application Logs'),
-        content: Text('Log viewer would be implemented here.'),
       ),
     );
   }

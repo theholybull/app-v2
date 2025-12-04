@@ -1,39 +1,52 @@
-import 'dart:async';
+// lib/core/vision/vision_service.dart
+//
+// Central place to track the latest VisionContext and broadcast it as a stream.
 
-import 'package:flutter/foundation.dart';
+import 'dart:async';
 
 import 'vision_context.dart';
 
-/// Central stream of "what the front camera currently sees".
-///
-/// This is fed by whichever layer is running face/object detection (currently
-/// your FaceDetectionProvider using google_ml_kit).
-class VisionService extends ChangeNotifier {
+class VisionService {
   VisionService();
+
+  /// Latest snapshot coming from whatever vision pipeline is active.
+  VisionContext _latest = VisionContext.empty();
 
   final StreamController<VisionContext> _contextController =
   StreamController<VisionContext>.broadcast();
 
-  VisionContext _latest = const VisionContext(faces: [], objects: []);
+  /// Stream of context updates.
+  Stream<VisionContext> get contextStream => _contextController.stream;
 
-  /// Latest fused context (faces + objects).
+  /// Current snapshot.
   VisionContext get latest => _latest;
 
-  /// Stream of updates for consumers (personality, UI overlays, etc.).
-  Stream<VisionContext> get stream => _contextController.stream;
-
+  /// Convenience: whether we currently see at least one face.
   bool get hasFaces => _latest.hasFaces;
+
+  /// Convenience: number of faces in the latest snapshot.
   int get numFaces => _latest.numFaces;
 
-  void updateContext(VisionContext ctx) {
+  /// New API: called by providers when they have a new vision snapshot.
+  void updateFromVision(VisionContext ctx) {
     _latest = ctx;
     _contextController.add(ctx);
-    notifyListeners();
   }
 
-  @override
+  /// Back-compat shim for existing callers (e.g. FaceDetectionProvider).
+  /// This simply forwards to [updateFromVision].
+  void updateContext(VisionContext ctx) {
+    updateFromVision(ctx);
+  }
+
+  /// For manual overrides / testing if needed.
+  void reset() {
+    _latest = VisionContext.empty();
+    _contextController.add(_latest);
+  }
+
   void dispose() {
     _contextController.close();
-    super.dispose();
   }
 }
+
