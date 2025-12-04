@@ -1,3 +1,4 @@
+// lib/screens/home_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -45,10 +46,10 @@ class _HomeScreenState extends State<HomeScreen> {
             // --- TAB 1: DASHBOARD ---
             _buildDashboardTab(context, piProvider),
 
-            // --- TAB 2: AVATAR & RIG (eyes/head/human avatar/pogo stick) ---
+            // --- TAB 2: AVATAR & RIG ---
             _buildAvatarTab(context),
 
-            // --- TAB 3: AI (placeholder for now, API wiring next) ---
+            // --- TAB 3: AI ---
             _buildAiTab(context),
           ],
         ),
@@ -60,40 +61,34 @@ class _HomeScreenState extends State<HomeScreen> {
       BuildContext context,
       PiConnectionProvider piProvider,
       ) {
-    return RefreshIndicator(
-      onRefresh: () async {
-        // Simple hook point if you want to re-ping the Pi or Viam later.
-        await piProvider.refreshStatus();
-      },
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: const [
-            // Pi connection + health
-            PiConnectionWidget(),
-            SizedBox(height: 12),
+    // For now, no explicit pull-to-refresh; Pi widget handles its own refresh.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Pi connection + health
+          const PiConnectionWidget(),
+          const SizedBox(height: 12),
 
-            // Viam connection card
-            ViamConnectionWidget(),
-            SizedBox(height: 12),
+          // Viam connection card
+          ViamConnectionWidget(),
+          const SizedBox(height: 12),
 
-            // Device info / sensors
-            DeviceInfoCard(),
-            SizedBox(height: 12),
+          // Device info / sensors
+          const DeviceInfoCard(),
+          const SizedBox(height: 12),
 
-            SensorCard(),
-            SizedBox(height: 12),
+          const SensorCard(),
+          const SizedBox(height: 12),
 
-            // Camera feed
-            CameraPreviewCard(),
-            SizedBox(height: 12),
+          // Camera feed
+          CameraPreviewCard(),
+          const SizedBox(height: 12),
 
-            // Audio controls
-            AudioControls(),
-          ],
-        ),
+          // Audio controls
+          AudioControls(),
+        ],
       ),
     );
   }
@@ -104,16 +99,13 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const EmotionDisplay(),
+          EmotionDisplay(),
           const SizedBox(height: 12),
-          const FaceDetectionControls(),
+          FaceDetectionControls(),
           const SizedBox(height: 12),
-          const PersonalityPanel(),
+          PersonalityPanel(),
           const SizedBox(height: 12),
 
-          // Placeholder for sprite / avatar sheet config.
-          // This keeps the concept in from day one; we’ll wire storage + file
-          // selection + Pi sync on the next pass.
           Card(
             elevation: 2,
             child: Padding(
@@ -130,11 +122,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   SizedBox(height: 8),
                   Text(
-                    'This is where you’ll hook up sprite sheets and avatar '
-                        'definitions for human avatars, robot heads, pogo sticks, '
-                        'or whatever else you strap this brain onto.\n\n'
-                        'Next step: we’ll add fields to point at sprite PNGs / '
-                        'atlas JSON and sync that config back to the Pi.',
+                    'Configure sprite sheets and avatar rigs here – whether it’s '
+                        'a human face, robot head, or a pogo stick with feelings. '
+                        'Next pass we’ll add fields for sprite PNGs / atlas JSON and '
+                        'sync that config to the Pi.',
                   ),
                 ],
               ),
@@ -146,8 +137,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildAiTab(BuildContext context) {
-    // For now this is just a clean shell; next step,
-    // we drop in the AI provider + chat UI + API calls.
     return Padding(
       padding: const EdgeInsets.all(12.0),
       child: Center(
@@ -163,8 +152,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             SizedBox(height: 8),
             Text(
-              'This tab will host the persona-aware chat, adult-mode toggle, '
-                  'and whatever API we bolt on (Pi local or cloud).',
+              'This tab will host persona-aware chat, adult-mode toggles, and '
+                  'whichever AI backend you point it at.',
               textAlign: TextAlign.center,
             ),
           ],
