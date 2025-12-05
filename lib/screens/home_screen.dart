@@ -7,6 +7,7 @@ import '../core/vision/vision_service.dart';
 import '../providers/personality_provider.dart';
 import '../widgets/personality_panel.dart';
 
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 

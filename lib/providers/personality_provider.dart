@@ -3,204 +3,202 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-/// Simple personality profile: who the avatar "is".
-class PersonalityProfile {
-  String displayName;
-  String role;
-  String backstory;
-  String style;
-  bool adultMode; // true -> adult / spicy mode allowed
+/// High-level knobs for how the AI side behaves.
+///
+/// Keeps this generic so we can point it at:
+///  * local Pi backend
+///  * OpenRouter / proxy
+///  * direct OpenAI if we really want to.
+class AiConfig {
+  final bool enableAi;
+  final String apiType; // 'local', 'openai', 'openrouter', etc.
+  final bool enableAdultMode;
+  final String endpoint;
+  final String? apiKey;
+  final String? model;
+  final String? spriteSheetPath;
+  final String? idleAvatarPath;
+  final String? talkingAvatarPath;
 
-  PersonalityProfile({
-    this.displayName = 'Gail',
-    this.role = 'Garage AI liaison',
-    this.backstory =
-    'Born in the glow of fluorescent shop lights and the smell of 80W-90.',
-    this.style = 'Gritty, nostalgic, straight-talking but kind.',
-    this.adultMode = false,
+  const AiConfig({
+    required this.enableAi,
+    required this.apiType,
+    required this.enableAdultMode,
+    required this.endpoint,
+    this.apiKey,
+    this.model,
+    this.spriteSheetPath,
+    this.idleAvatarPath,
+    this.talkingAvatarPath,
   });
 
-  factory PersonalityProfile.fromJson(Map<String, dynamic> json) {
-    return PersonalityProfile(
-      displayName: json['displayName'] as String? ?? 'Gail',
-      role: json['role'] as String? ?? 'Garage AI liaison',
-      backstory: json['backstory'] as String? ?? '',
-      style: json['style'] as String? ?? '',
-      adultMode: json['adultMode'] as bool? ?? false,
+  factory AiConfig.initial() => const AiConfig(
+    enableAi: false,
+    apiType: 'local',
+    enableAdultMode: false,
+    endpoint: 'http://kilo.local:8090',
+    apiKey: null,
+    model: null,
+    spriteSheetPath: null,
+    idleAvatarPath: null,
+    talkingAvatarPath: null,
+  );
+
+  AiConfig copyWith({
+    bool? enableAi,
+    String? apiType,
+    bool? enableAdultMode,
+    String? endpoint,
+    String? apiKey,
+    String? model,
+    String? spriteSheetPath,
+    String? idleAvatarPath,
+    String? talkingAvatarPath,
+  }) {
+    return AiConfig(
+      enableAi: enableAi ?? this.enableAi,
+      apiType: apiType ?? this.apiType,
+      enableAdultMode: enableAdultMode ?? this.enableAdultMode,
+      endpoint: endpoint ?? this.endpoint,
+      apiKey: apiKey ?? this.apiKey,
+      model: model ?? this.model,
+      spriteSheetPath: spriteSheetPath ?? this.spriteSheetPath,
+      idleAvatarPath: idleAvatarPath ?? this.idleAvatarPath,
+      talkingAvatarPath: talkingAvatarPath ?? this.talkingAvatarPath,
     );
   }
 
-  Map<String, dynamic> toJson() => {
-    'displayName': displayName,
-    'role': role,
-    'backstory': backstory,
-    'style': style,
-    'adultMode': adultMode,
-  };
-}
-
-/// Config for talking to your AI backend (OpenAI, local, etc.).
-class AiConfig {
-  String baseUrl; // e.g. http://kilo.local:8091 or https://api.openai.com
-  String model;
-  String apiKey;
-  double temperature;
-  int maxTokens;
-  String providerId; // 'openai', 'local', etc.
-
-  AiConfig({
-    this.baseUrl = '',
-    this.model = 'gpt-4.1-mini',
-    this.apiKey = '',
-    this.temperature = 0.7,
-    this.maxTokens = 512,
-    this.providerId = 'openai',
-  });
+  Map<String, dynamic> toJson() {
+    return {
+      'enableAi': enableAi,
+      'apiType': apiType,
+      'enableAdultMode': enableAdultMode,
+      'endpoint': endpoint,
+      'apiKey': apiKey,
+      'model': model,
+      'spriteSheetPath': spriteSheetPath,
+      'idleAvatarPath': idleAvatarPath,
+      'talkingAvatarPath': talkingAvatarPath,
+    };
+  }
 
   factory AiConfig.fromJson(Map<String, dynamic> json) {
     return AiConfig(
-      baseUrl: json['baseUrl'] as String? ?? '',
-      model: json['model'] as String? ?? 'gpt-4.1-mini',
-      apiKey: json['apiKey'] as String? ?? '',
-      temperature: (json['temperature'] as num?)?.toDouble() ?? 0.7,
-      maxTokens: json['maxTokens'] as int? ?? 512,
-      providerId: json['providerId'] as String? ?? 'openai',
+      enableAi: json['enableAi'] as bool? ?? false,
+      apiType: json['apiType'] as String? ?? 'local',
+      enableAdultMode: json['enableAdultMode'] as bool? ?? false,
+      endpoint: json['endpoint'] as String? ?? 'http://kilo.local:8090',
+      apiKey: json['apiKey'] as String?,
+      model: json['model'] as String?,
+      spriteSheetPath: json['spriteSheetPath'] as String?,
+      idleAvatarPath: json['idleAvatarPath'] as String?,
+      talkingAvatarPath: json['talkingAvatarPath'] as String?,
     );
   }
-
-  Map<String, dynamic> toJson() => {
-    'baseUrl': baseUrl,
-    'model': model,
-    'apiKey': apiKey,
-    'temperature': temperature,
-    'maxTokens': maxTokens,
-    'providerId': providerId,
-  };
 }
 
-/// Sprite / avatar paths (these live on the device or Pi and are consumed
-/// by your avatar renderer).
-class AvatarPaths {
-  String idle;
-  String talking;
-  String thinking;
+/// High-level description of the persona loaded from JSON on the Pi.
+class PersonalityProfile {
+  final String name;
+  final String description;
+  final String systemPrompt;
+  final Map<String, dynamic> rawJson;
 
-  AvatarPaths({
-    this.idle = '',
-    this.talking = '',
-    this.thinking = '',
+  const PersonalityProfile({
+    required this.name,
+    required this.description,
+    required this.systemPrompt,
+    required this.rawJson,
   });
 
-  factory AvatarPaths.fromJson(Map<String, dynamic> json) {
-    return AvatarPaths(
-      idle: json['idle'] as String? ?? '',
-      talking: json['talking'] as String? ?? '',
-      thinking: json['thinking'] as String? ?? '',
+  factory PersonalityProfile.empty() => const PersonalityProfile(
+    name: 'Default',
+    description: 'Base personality',
+    systemPrompt: '',
+    rawJson: <String, dynamic>{},
+  );
+
+  factory PersonalityProfile.fromJson(Map<String, dynamic> json) {
+    return PersonalityProfile(
+      name: json['name'] as String? ?? 'Default',
+      description: json['description'] as String? ?? '',
+      systemPrompt: json['systemPrompt'] as String? ?? '',
+      rawJson: json,
     );
   }
-
-  Map<String, dynamic> toJson() => {
-    'idle': idle,
-    'talking': talking,
-    'thinking': thinking,
-  };
 }
 
-/// Main provider driving the personality / AI / avatar config.
+/// Glue between the phone UI and the Pi personality backend.
 class PersonalityProvider extends ChangeNotifier {
-  PersonalityProvider({required this.piBaseUrl});
+  /// Base URL of the Pi backend. Default is mDNS for now.
+  ///
+  /// Example: http://kilo.local:8090
+  String piBaseUrl;
 
-  /// Base URL for the Pi head backend (e.g. http://kilo.local:8090).
-  final String piBaseUrl;
-
-  PersonalityProfile _profile = PersonalityProfile();
-  AiConfig _aiConfig = AiConfig();
-  AvatarPaths _avatarPaths = AvatarPaths();
+  PersonalityProfile _profile = PersonalityProfile.empty();
+  AiConfig _aiConfig = AiConfig.initial();
 
   bool _isSavingConfig = false;
   bool _isChatting = false;
   String? _lastError;
   String? _lastReply;
 
-  // ---- Public getters used by the widgets ----
+  PersonalityProvider({String? piBaseUrl})
+      : piBaseUrl = piBaseUrl ?? 'http://kilo.local:8090';
 
   PersonalityProfile get profile => _profile;
   AiConfig get aiConfig => _aiConfig;
-  AvatarPaths get avatarPaths => _avatarPaths;
-
   bool get isSavingConfig => _isSavingConfig;
   bool get isChatting => _isChatting;
   String? get lastError => _lastError;
   String? get lastReply => _lastReply;
 
-  // ---- Simple helpers ----
+  /// Later, PiConnectionProvider can call this so we don’t hard-code forever.
+  void setPiBaseUrl(String url) {
+    if (url == piBaseUrl) return;
+    piBaseUrl = url;
+    notifyListeners();
+  }
 
-  Uri _buildPiUri(String path) {
-    if (piBaseUrl.isEmpty) {
-      // This lets the app still run without a Pi; calls will just no-op.
-      throw StateError('piBaseUrl is not configured');
+  Uri _buildUri(String path) {
+    final base = piBaseUrl.endsWith('/')
+        ? piBaseUrl.substring(0, piBaseUrl.length - 1)
+        : piBaseUrl;
+    return Uri.parse('$base$path');
+  }
+
+  Future<void> loadProfile() async {
+    try {
+      final res = await http
+          .get(_buildUri('/personality/profile'))
+          .timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final jsonMap = json.decode(res.body) as Map<String, dynamic>;
+        _profile = PersonalityProfile.fromJson(jsonMap);
+        _lastError = null;
+      } else {
+        _lastError = 'Profile HTTP ${res.statusCode}';
+      }
+    } catch (e) {
+      _lastError = 'Profile load failed: $e';
     }
-    return Uri.parse('$piBaseUrl$path');
-  }
-
-  // ---- Profile editing ----
-
-  void updateProfile({
-    String? displayName,
-    String? role,
-    String? backstory,
-    String? style,
-    bool? adultMode,
-  }) {
-    _profile = PersonalityProfile(
-      displayName: displayName ?? _profile.displayName,
-      role: role ?? _profile.role,
-      backstory: backstory ?? _profile.backstory,
-      style: style ?? _profile.style,
-      adultMode: adultMode ?? _profile.adultMode,
-    );
     notifyListeners();
   }
-
-  // ---- Avatar paths ----
-
-  void setAvatarPaths({
-    String? idle,
-    String? talking,
-    String? thinking,
-  }) {
-    _avatarPaths = AvatarPaths(
-      idle: idle ?? _avatarPaths.idle,
-      talking: talking ?? _avatarPaths.talking,
-      thinking: thinking ?? _avatarPaths.thinking,
-    );
-    notifyListeners();
-  }
-
-  // ---- AI config load/save against Pi ----
 
   Future<void> fetchAiConfig() async {
     try {
-      final uri = _buildPiUri('/personality/ai-config');
-      final resp = await http.get(uri).timeout(const Duration(seconds: 5));
-      if (resp.statusCode == 200) {
-        final data = json.decode(resp.body) as Map<String, dynamic>;
-        _aiConfig = AiConfig.fromJson(data['aiConfig'] as Map<String, dynamic>);
-        if (data['profile'] is Map<String, dynamic>) {
-          _profile =
-              PersonalityProfile.fromJson(data['profile'] as Map<String, dynamic>);
-        }
-        if (data['avatar'] is Map<String, dynamic>) {
-          _avatarPaths =
-              AvatarPaths.fromJson(data['avatar'] as Map<String, dynamic>);
-        }
+      final res = await http
+          .get(_buildUri('/personality/ai-config'))
+          .timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final jsonMap = json.decode(res.body) as Map<String, dynamic>;
+        _aiConfig = AiConfig.fromJson(jsonMap);
         _lastError = null;
       } else {
-        _lastError = 'Failed to load AI config (${resp.statusCode})';
+        _lastError = 'Config HTTP ${res.statusCode}';
       }
     } catch (e) {
-      // If Pi isn’t there yet, we don’t hard-fail — just stash the error.
-      _lastError = 'Error loading AI config: $e';
+      _lastError = 'Config load failed: $e';
     }
     notifyListeners();
   }
@@ -208,78 +206,72 @@ class PersonalityProvider extends ChangeNotifier {
   Future<void> saveAiConfig(AiConfig cfg) async {
     _isSavingConfig = true;
     _lastError = null;
-    _aiConfig = cfg;
     notifyListeners();
-
     try {
-      final uri = _buildPiUri('/personality/ai-config');
-      final body = json.encode({
-        'aiConfig': _aiConfig.toJson(),
-        'profile': _profile.toJson(),
-        'avatar': _avatarPaths.toJson(),
-      });
-      final resp = await http
-          .post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: body,
-      )
-          .timeout(const Duration(seconds: 5));
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        _lastError = null;
+      final res = await http.post(
+        _buildUri('/personality/ai-config'),
+        headers: const {'Content-Type': 'application/json'},
+        body: json.encode(cfg.toJson()),
+      ).timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        _aiConfig = cfg;
       } else {
-        _lastError = 'Save failed (${resp.statusCode})';
+        _lastError = 'Save failed: HTTP ${res.statusCode}';
       }
     } catch (e) {
-      _lastError = 'Error saving AI config: $e';
+      _lastError = 'Save failed: $e';
     } finally {
       _isSavingConfig = false;
       notifyListeners();
     }
   }
 
-  // ---- Chat ----
+  /// Update just the avatar / sprite paths.
+  void setAvatarPaths({
+    String? spriteSheetPath,
+    String? idleAvatarPath,
+    String? talkingAvatarPath,
+  }) {
+    _aiConfig = _aiConfig.copyWith(
+      spriteSheetPath: spriteSheetPath ?? _aiConfig.spriteSheetPath,
+      idleAvatarPath: idleAvatarPath ?? _aiConfig.idleAvatarPath,
+      talkingAvatarPath: talkingAvatarPath ?? _aiConfig.talkingAvatarPath,
+    );
+    notifyListeners();
+  }
 
-  /// Send a quick chat to the Pi backend. The Pi side is expected to expose
-  /// POST /chat { message, profile, aiConfig, mode } -> { reply }.
-  Future<void> sendChat(String message) async {
-    if (message.trim().isEmpty) return;
+  Future<String?> sendChat(String prompt) async {
+    if (prompt.trim().isEmpty) return null;
 
     _isChatting = true;
     _lastError = null;
+    _lastReply = null;
     notifyListeners();
 
     try {
-      final uri = _buildPiUri('/chat');
-      final body = json.encode({
-        'message': message,
-        'profile': _profile.toJson(),
-        'aiConfig': _aiConfig.toJson(),
-        'mode': _profile.adultMode ? 'adult' : 'safe',
-      });
+      final res = await http.post(
+        _buildUri('/chat'),
+        headers: const {'Content-Type': 'application/json'},
+        body: json.encode({
+          'prompt': prompt,
+          'profile': _profile.rawJson,
+          'config': _aiConfig.toJson(),
+        }),
+      ).timeout(const Duration(seconds: 20));
 
-      final resp = await http
-          .post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: body,
-      )
-          .timeout(const Duration(seconds: 15));
-
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        final data = json.decode(resp.body) as Map<String, dynamic>;
-        _lastReply = data['reply'] as String? ?? '';
-        _lastError = null;
+      if (res.statusCode == 200) {
+        final body = json.decode(res.body) as Map<String, dynamic>;
+        _lastReply = body['reply'] as String? ?? '';
       } else {
-        _lastReply = null;
-        _lastError = 'Chat failed (${resp.statusCode})';
+        _lastError = 'Chat failed: HTTP ${res.statusCode}';
       }
     } catch (e) {
-      _lastReply = null;
-      _lastError = 'Chat error: $e';
+      _lastError = 'Chat failed: $e';
     } finally {
       _isChatting = false;
       notifyListeners();
     }
+
+    return _lastReply;
   }
 }
