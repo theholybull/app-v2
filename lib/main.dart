@@ -54,9 +54,13 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider<EmotionDisplayProvider>(
           create: (_) => EmotionDisplayProvider(),
         ),
-        ChangeNotifierProvider<FaceDetectionProvider>(
-          create: (_) => FaceDetectionProvider(),
-        ),
+    ChangeNotifierProvider(
+    create: (_) => PersonalityProvider(
+    piBaseUrl: 'http://kilo.local:8090',   // fallback default
+    ),
+    ),
+
+    ),
         ChangeNotifierProvider<PersonalityProvider>(
           create: (_) => PersonalityProvider(),
         ),

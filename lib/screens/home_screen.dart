@@ -2,17 +2,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import 'package:viam_pixel4a_sensors/widgets/pi_connection_widget.dart';
-import 'package:viam_pixel4a_sensors/widgets/viam_connection.dart';
-import 'package:viam_pixel4a_sensors/widgets/sensor_card.dart';
-import 'package:viam_pixel4a_sensors/widgets/camera_preview.dart';
-import 'package:viam_pixel4a_sensors/widgets/audio_controls.dart';
-import 'package:viam_pixel4a_sensors/widgets/emotion_display.dart';
-import 'package:viam_pixel4a_sensors/widgets/face_detection_controls.dart';
-import 'package:viam_pixel4a_sensors/widgets/personality_panel.dart';
-import 'package:viam_pixel4a_sensors/widgets/device_info_card.dart';
-
-import 'package:viam_pixel4a_sensors/providers/pi_connection_provider.dart';
+import '../providers/pi_connection_provider.dart';
+import '../core/vision/vision_service.dart';
+import '../providers/personality_provider.dart';
+import '../widgets/personality_panel.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,138 +16,190 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   @override
+  void initState() {
+    super.initState();
+    // Kick off a Pi scan after first frame so context is valid.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pi = context.read<PiConnectionProvider>();
+      if (!pi.connectionStatus.isConnected && !pi.isScanning) {
+        pi.scanForPi();
+      }
+    });
+
+    // Optionally try to load AI config/profile once on startup.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final personality = context.read<PersonalityProvider>();
+      personality.fetchAiConfig();
+      personality.loadProfile();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final piProvider = context.watch<PiConnectionProvider>();
+    final vision = context.watch<VisionService>();
 
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Kilo Head Control'),
-          centerTitle: false,
-          bottom: const TabBar(
-            isScrollable: true,
-            tabs: [
-              Tab(icon: Icon(Icons.dashboard), text: 'Dashboard'),
-              Tab(icon: Icon(Icons.face_retouching_natural), text: 'Avatar & Rig'),
-              Tab(icon: Icon(Icons.chat_bubble_outline), text: 'AI'),
-            ],
-          ),
-        ),
-        body: TabBarView(
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Kilo Head'),
+        centerTitle: true,
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          final pi = context.read<PiConnectionProvider>();
+          // We dropped refreshStatus – just rescan for now.
+          await pi.scanForPi();
+        },
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: 24),
           children: [
-            // --- TAB 1: DASHBOARD ---
-            _buildDashboardTab(context, piProvider),
-
-            // --- TAB 2: AVATAR & RIG ---
-            _buildAvatarTab(context),
-
-            // --- TAB 3: AI ---
-            _buildAiTab(context),
+            const SizedBox(height: 8),
+            const _PiStatusCard(),
+            const SizedBox(height: 8),
+            _CameraPreviewCard(vision: vision),
+            const SizedBox(height: 8),
+            const PersonalityPanel(),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildDashboardTab(
-      BuildContext context,
-      PiConnectionProvider piProvider,
-      ) {
-    // For now, no explicit pull-to-refresh; Pi widget handles its own refresh.
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(12.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Pi connection + health
-          const PiConnectionWidget(),
-          const SizedBox(height: 12),
+class _PiStatusCard extends StatelessWidget {
+  const _PiStatusCard();
 
-          // Viam connection card
-          ViamConnectionWidget(),
-          const SizedBox(height: 12),
+  @override
+  Widget build(BuildContext context) {
+    final pi = context.watch<PiConnectionProvider>();
+    final status = pi.connectionStatus;
 
-          // Device info / sensors
-          const DeviceInfoCard(),
-          const SizedBox(height: 12),
+    final isConnected = status.isConnected;
+    final isScanning = pi.isScanning;
 
-          const SensorCard(),
-          const SizedBox(height: 12),
+    final color = isConnected
+        ? Colors.green
+        : isScanning
+        ? Colors.orange
+        : Colors.redAccent;
 
-          // Camera feed
-          CameraPreviewCard(),
-          const SizedBox(height: 12),
+    final text = isConnected
+        ? 'Connected to ${status.piAddress}'
+        : isScanning
+        ? 'Scanning for Pi head…'
+        : (status.error ?? 'Not connected');
 
-          // Audio controls
-          AudioControls(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAvatarTab(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(12.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          EmotionDisplay(),
-          const SizedBox(height: 12),
-          FaceDetectionControls(),
-          const SizedBox(height: 12),
-          PersonalityPanel(),
-          const SizedBox(height: 12),
-
-          Card(
-            elevation: 2,
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text(
-                    'Avatar Sprites & Rig',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'Configure sprite sheets and avatar rigs here – whether it’s '
-                        'a human face, robot head, or a pogo stick with feelings. '
-                        'Next pass we’ll add fields for sprite PNGs / atlas JSON and '
-                        'sync that config to the Pi.',
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAiTab(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: Center(
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            Icon(Icons.chat_bubble_outline, size: 48),
-            SizedBox(height: 16),
-            Text(
-              'AI brain hookup is next.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.memory, color: color),
+                const SizedBox(width: 8),
+                const Text(
+                  'Pi / Head Connection',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                Switch(
+                  value: pi.autoConnect,
+                  onChanged: (v) => pi.setAutoConnect(v),
+                ),
+              ],
             ),
-            SizedBox(height: 8),
+            const SizedBox(height: 8),
+            Text(text),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (status.lastPing > 0) ...[
+                  const Icon(Icons.speed, size: 16),
+                  const SizedBox(width: 4),
+                  Text('${status.lastPing} ms'),
+                  const SizedBox(width: 16),
+                ],
+                if (status.connectionType != null &&
+                    status.connectionType!.isNotEmpty) ...[
+                  const Icon(Icons.wifi, size: 16),
+                  const SizedBox(width: 4),
+                  Text(status.connectionType!),
+                ],
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: isScanning
+                      ? null
+                      : () {
+                    pi.scanForPi();
+                  },
+                  icon: isScanning
+                      ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child:
+                    CircularProgressIndicator(strokeWidth: 2),
+                  )
+                      : const Icon(Icons.search),
+                  label: Text(isScanning ? 'Scanning…' : 'Scan'),
+                ),
+                const SizedBox(width: 8),
+                if (isConnected)
+                  TextButton(
+                    onPressed: () => pi.disconnect(),
+                    child: const Text('Disconnect'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraPreviewCard extends StatelessWidget {
+  final VisionService vision;
+
+  const _CameraPreviewCard({required this.vision});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasFaces = vision.hasFaces;
+    final numFaces = vision.numFaces;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Camera / Vision',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
             Text(
-              'This tab will host persona-aware chat, adult-mode toggles, and '
-                  'whichever AI backend you point it at.',
-              textAlign: TextAlign.center,
+              hasFaces
+                  ? 'Faces detected: $numFaces'
+                  : 'No faces detected yet',
+            ),
+            const SizedBox(height: 8),
+            Container(
+              height: 160,
+              width: double.infinity,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.black12,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Camera preview placeholder\n(wire to live stream later)',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12),
+              ),
             ),
           ],
         ),
