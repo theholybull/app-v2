@@ -1,6 +1,8 @@
+// lib/services/pi_backend_client.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+/// Simple snapshot of Pi head state.
 class PiState {
   final String mode;
   final String emotion;
@@ -14,48 +16,47 @@ class PiState {
 
   factory PiState.fromJson(Map<String, dynamic> json) {
     return PiState(
-      mode: (json['mode'] ?? 'idle').toString(),
-      emotion: (json['emotion'] ?? 'neutral').toString(),
+      mode: (json['mode'] as String?) ?? 'idle',
+      emotion: (json['emotion'] as String?) ?? 'neutral',
       lastUpdate: json['last_update'] != null
-          ? DateTime.tryParse(json['last_update'].toString())
+          ? DateTime.tryParse(json['last_update'] as String)
           : null,
     );
   }
 }
 
+/// Thin HTTP client around kilo-head-backend on the Pi.
+///
+/// NOTE: `host` is treated as the *full base URL*, e.g.:
+///   "http://10.10.10.67:8090"
 class PiBackendClient {
-  final String host; // e.g. "10.10.10.67" or full URL
-  final int port;    // e.g. 8090
+  final String _baseUrl;
+  final int port; // currently unused, kept for compatibility
 
-  PiBackendClient({
-    required this.host,
-    required this.port,
-  });
+  PiBackendClient({required String host, this.port = 8090})
+      : _baseUrl = host;
 
   Uri _buildUri(String path) {
-    final trimmed = host.trim();
-
-    // If host is a full URL, trust it and just append path.
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      final base = Uri.parse(trimmed);
-      return base.replace(path: path);
-    }
-
-    // Bare host/IP.
-    return Uri.parse('http://$trimmed:$port$path');
+    final base = _baseUrl.endsWith('/')
+        ? _baseUrl.substring(0, _baseUrl.length - 1)
+        : _baseUrl;
+    return Uri.parse('$base$path');
   }
 
-  Future<bool> checkHealth() async {
+  Future<Map<String, dynamic>> health() async {
     final uri = _buildUri('/health');
-    final resp = await http.get(uri).timeout(const Duration(seconds: 3));
-    if (resp.statusCode != 200) return false;
-    final body = json.decode(resp.body) as Map<String, dynamic>;
-    return (body['ok'] == true);
+    final resp =
+    await http.get(uri).timeout(const Duration(seconds: 5));
+    if (resp.statusCode != 200) {
+      throw Exception('Bad status from /health: ${resp.statusCode}');
+    }
+    return json.decode(resp.body) as Map<String, dynamic>;
   }
 
   Future<PiState> getState() async {
     final uri = _buildUri('/state');
-    final resp = await http.get(uri).timeout(const Duration(seconds: 5));
+    final resp =
+    await http.get(uri).timeout(const Duration(seconds: 5));
     if (resp.statusCode != 200) {
       throw Exception('Bad status from /state: ${resp.statusCode}');
     }
@@ -65,11 +66,13 @@ class PiBackendClient {
 
   Future<void> setEmotion(String emotion) async {
     final uri = _buildUri('/setEmotion');
-    final resp = await http.post(
+    final resp = await http
+        .post(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: const {'Content-Type': 'application/json'},
       body: json.encode({'emotion': emotion}),
-    ).timeout(const Duration(seconds: 5));
+    )
+        .timeout(const Duration(seconds: 5));
 
     if (resp.statusCode != 200) {
       throw Exception('setEmotion failed: ${resp.statusCode} ${resp.body}');
@@ -78,14 +81,74 @@ class PiBackendClient {
 
   Future<void> setMode(String mode) async {
     final uri = _buildUri('/setMode');
-    final resp = await http.post(
+    final resp = await http
+        .post(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: const {'Content-Type': 'application/json'},
       body: json.encode({'mode': mode}),
-    ).timeout(const Duration(seconds: 5));
+    )
+        .timeout(const Duration(seconds: 5));
 
     if (resp.statusCode != 200) {
       throw Exception('setMode failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
+
+  /// Phone → Pi sensor snapshot.
+  ///
+  /// Payload shape:
+  /// {
+  ///   "ts": "...",
+  ///   "orientation": {...},
+  ///   "accel": {...},
+  ///   "gps": {...},
+  ///   "altitude_m": ...,
+  ///   "phone_battery": ...
+  /// }
+  Future<void> postSensors(Map<String, dynamic> payload) async {
+    final uri = _buildUri('/sensors');
+    final resp = await http
+        .post(
+      uri,
+      headers: const {'Content-Type': 'application/json'},
+      body: json.encode(payload),
+    )
+        .timeout(const Duration(seconds: 5));
+
+    if (resp.statusCode != 200) {
+      throw Exception('postSensors failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
+
+  /// Generic event pipe Phone ↔ Pi.
+  ///
+  /// Example:
+  ///   await postEvent(
+  ///     type: 'face.friend_seen',
+  ///     payload: {'label': 'Josh', 'confidence': 0.94},
+  ///   );
+  Future<void> postEvent({
+    required String type,
+    String source = 'phone',
+    Map<String, dynamic>? payload,
+  }) async {
+    final uri = _buildUri('/events');
+    final body = <String, dynamic>{
+      'source': source,
+      'type': type,
+      if (payload != null) 'payload': payload,
+    };
+
+    final resp = await http
+        .post(
+      uri,
+      headers: const {'Content-Type': 'application/json'},
+      body: json.encode(body),
+    )
+        .timeout(const Duration(seconds: 5));
+
+    if (resp.statusCode != 200) {
+      throw Exception('postEvent failed: ${resp.statusCode} ${resp.body}');
     }
   }
 }

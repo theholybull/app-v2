@@ -3,10 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/pi_connection_provider.dart';
-import '../core/vision/vision_service.dart';
+import '../providers/sensor_provider.dart';
 import '../providers/personality_provider.dart';
+import '../providers/emotion_display_provider.dart';
+import '../core/vision/vision_service.dart';
 import '../widgets/personality_panel.dart';
-
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -16,23 +17,74 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  bool _piSyncConfigured = false;
+  VoidCallback? _piListener;
+
   @override
   void initState() {
     super.initState();
-    // Kick off a Pi scan after first frame so context is valid.
+
+    // Defer all provider work until after the first frame so context is valid.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final pi = context.read<PiConnectionProvider>();
+      final sensors = context.read<SensorProvider>();
+      final personality = context.read<PersonalityProvider>();
+      final emotionDisplay = context.read<EmotionDisplayProvider>();
+
+      // 1) Start sensor subsystem on the phone
+      sensors.initialize();
+      sensors.startMonitoring();
+
+      // 2) Fetch AI config/profile once
+      personality.fetchAiConfig();
+      personality.loadProfile();
+
+      // 3) Auto-scan for Pi on startup
       if (!pi.connectionStatus.isConnected && !pi.isScanning) {
         pi.scanForPi();
       }
-    });
 
-    // Optionally try to load AI config/profile once on startup.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final personality = context.read<PersonalityProvider>();
-      personality.fetchAiConfig();
-      personality.loadProfile();
+      // 4) Listen for Pi connection changes and sync base URL to other providers
+      _piListener = () {
+        final status = pi.connectionStatus;
+
+        if (status.isConnected && status.piAddress != null) {
+          final baseUrl = 'http://${status.piAddress}:8090';
+
+          if (!_piSyncConfigured) {
+            // Wire emotion/eyes to the Pi backend
+            emotionDisplay.startHeadBackendSync(baseUrl);
+
+            // Wire sensor push to the same backend + enable sharing
+            sensors.setPiBaseUrl(baseUrl);
+            sensors.setShareWithPi(true);
+
+            // Wire personality/AI Pi endpoint
+            personality.setPiBaseUrl(baseUrl);
+
+            _piSyncConfigured = true;
+          }
+        } else {
+          // Lost connection; allow re-sync next time.
+          _piSyncConfigured = false;
+        }
+      };
+
+      pi.addListener(_piListener!);
+
+      // Run the listener once with current state so if we're already connected,
+      // everything syncs immediately.
+      _piListener!();
     });
+  }
+
+  @override
+  void dispose() {
+    final pi = context.read<PiConnectionProvider>();
+    if (_piListener != null) {
+      pi.removeListener(_piListener!);
+    }
+    super.dispose();
   }
 
   @override
@@ -47,7 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           final pi = context.read<PiConnectionProvider>();
-          // We dropped refreshStatus – just rescan for now.
           await pi.scanForPi();
         },
         child: ListView(
@@ -98,37 +149,27 @@ class _PiStatusCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.memory, color: color),
+                Icon(Icons.circle, color: color, size: 12),
                 const SizedBox(width: 8),
-                const Text(
-                  'Pi / Head Connection',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                Text(
+                  'Pi connection',
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const Spacer(),
-                Switch(
-                  value: pi.autoConnect,
-                  onChanged: (v) => pi.setAutoConnect(v),
+                Text(
+                  isConnected ? 'Online' : (isScanning ? 'Scanning…' : 'Offline'),
+                  style: TextStyle(color: color),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Text(text),
+            Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 8),
             Row(
               children: [
-                if (status.lastPing > 0) ...[
-                  const Icon(Icons.speed, size: 16),
-                  const SizedBox(width: 4),
-                  Text('${status.lastPing} ms'),
-                  const SizedBox(width: 16),
-                ],
-                if (status.connectionType != null &&
-                    status.connectionType!.isNotEmpty) ...[
-                  const Icon(Icons.wifi, size: 16),
-                  const SizedBox(width: 4),
-                  Text(status.connectionType!),
-                ],
-                const Spacer(),
                 TextButton.icon(
                   onPressed: isScanning
                       ? null
@@ -139,10 +180,9 @@ class _PiStatusCard extends StatelessWidget {
                       ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child:
-                    CircularProgressIndicator(strokeWidth: 2),
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                      : const Icon(Icons.search),
+                      : const Icon(Icons.refresh, size: 16),
                   label: Text(isScanning ? 'Scanning…' : 'Scan'),
                 ),
                 const SizedBox(width: 8),
@@ -185,12 +225,12 @@ class _CameraPreviewCard extends StatelessWidget {
             Text(
               hasFaces
                   ? 'Faces detected: $numFaces'
-                  : 'No faces detected yet',
+                  : 'No faces detected (preview placeholder)',
+              style: const TextStyle(fontSize: 14),
             ),
             const SizedBox(height: 8),
             Container(
-              height: 160,
-              width: double.infinity,
+              height: 180,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: Colors.black12,
